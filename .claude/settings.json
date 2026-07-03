@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bun -v)",
+      "Bash(npm -v)",
+      "Bash(npx --yes bun --version)",
+      "Bash(NITRO_PRESET=vercel npx bun run build)",
+      "Bash(git rm *)",
+      "Bash(npx tsc *)",
+      "Bash(git stash *)",
+      "Bash(NODE_OPTIONS=\"--max-old-space-size=4096\" npx tsc --noEmit -p tsconfig.json)",
+      "Bash(npx eslint *)",
+      "Bash(cd \"c:\\\\Users\\\\bhumi\\\\Downloads\\\\desktop-ledger\" && rm -rf .vercel && git status --short)",
+      "WebSearch",
+      "WebFetch(domain:firebase.google.com)",
+      "WebFetch(domain:googleapis.dev)",
+      "WebFetch(domain:github.com)",
+      "Bash(grep -n \"Party not found\\\\|useParty\\\\|params.id\\\\|PartyRepo\" \"C:\\\\Users\\\\bhumi\\\\Downloads\\\\desktop-ledger\\\\src\\\\routes\\\\parties_.\\\\$id.tsx\" | head -30)",
+      "Read(//c/Users/bhumi/Downloads/desktop-ledger/src/routes/**)",
+      "Bash(grep -rn \"shareWhatsApp\" \"c:\\\\Users\\\\bhumi\\\\Downloads\\\\desktop-ledger\\\\src\\\\routes\\\\sales.\\\\$id.tsx\" 2>/dev/null; echo \"---\"; find \"c:\\\\Users\\\\bhumi\\\\Downloads\\\\desktop-ledger\\\\src\\\\routes\" -iname \"sales*\")",
+      "Bash(node -e \"console.log\\(Math.max\\(0, Math.round\\(\\(5000 - undefined\\) * 100\\) / 100\\)\\); console.log\\(NaN > 0\\)\")",
+      "Skill(run)",
+      "Skill(run:*)",
+      "Bash(timeout 40 bash -c 'until curl -sf http://localhost:5000 >/dev/null 2>&1; do sleep 1; done')",
+      "Bash(npx --yes playwright --version)",
+      "Bash(npx --yes playwright install chromium --with-deps)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\bhumi\\Downloads\\desktop-ledger\\.vercel"
+    ]
+  }
+}
