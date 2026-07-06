@@ -35,6 +35,7 @@ const defaultCompany: Company = {
   invoicePrefix: "INV-",
   purchasePrefix: "PUR-",
   enableGst: true,
+  allowNegativeStock: true,
 };
 
 /** Company settings live in a single Firestore doc: settings/company */

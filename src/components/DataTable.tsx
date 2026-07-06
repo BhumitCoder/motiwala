@@ -96,7 +96,7 @@ export function DataTable<T>({
         onKeyDown={onKey}
         className="data-table flex-1 overflow-auto outline-none"
       >
-        <table className="w-full text-[13px]">
+        <table className="w-full min-w-max text-[13px]">
           <thead>
             <tr>
               {columns.map((c) => (

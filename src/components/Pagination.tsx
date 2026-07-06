@@ -62,75 +62,112 @@ export function PaginationBar({
   const btn =
     "h-7 min-w-7 px-1.5 inline-flex items-center justify-center rounded-md border border-gray-200 bg-white text-[12px] text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition";
 
-  return (
-    <div className="border-t bg-white px-4 py-2 flex flex-wrap items-center justify-between gap-2 shrink-0">
-      <div className="flex items-center gap-3">
-        <span className="text-[12px] text-gray-500 tabular-nums">
-          Showing{" "}
-          <span className="font-semibold text-gray-700">
-            {fmt(from)}–{fmt(to)}
-          </span>{" "}
-          of <span className="font-semibold text-gray-700">{fmt(total)}</span>
-        </span>
-        <label className="flex items-center gap-1.5 text-[12px] text-gray-500">
-          Per page
-          <select
-            value={pageSize}
-            onChange={(e) => onPageSize(parseInt(e.target.value, 10))}
-            className="h-7 px-1.5 border border-gray-200 rounded-md bg-white text-[12px] text-gray-700 outline-none focus:border-primary"
-          >
-            {PAGE_SIZES.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+  const navBtn =
+    "h-9 px-4 inline-flex items-center justify-center gap-1 rounded-md border border-gray-200 bg-white text-[13px] font-semibold text-gray-700 disabled:opacity-40 disabled:cursor-not-allowed active:bg-gray-100 transition";
 
-      <div className="flex items-center gap-1">
-        <button className={btn} disabled={page <= 1} onClick={() => onPage(1)} title="First page">
-          <ChevronsLeft className="h-3.5 w-3.5" />
-        </button>
+  return (
+    <div className="border-t bg-white shrink-0">
+      {/* Mobile: big, thumb-friendly Prev/Next — numbered pages and the
+          per-page selector are a desktop-mouse pattern, not a phone one. */}
+      <div className="flex md:hidden items-center justify-between px-3 py-2.5 gap-2">
         <button
-          className={btn}
+          className={navBtn}
           disabled={page <= 1}
           onClick={() => onPage(page - 1)}
-          title="Previous page"
         >
-          <ChevronLeft className="h-3.5 w-3.5" />
+          <ChevronLeft className="h-4 w-4" /> Prev
         </button>
-        {pageList(page, totalPages).map((p, i) =>
-          p === "…" ? (
-            <span key={`e${i}`} className="px-1 text-[12px] text-gray-400">
-              …
-            </span>
-          ) : (
-            <button
-              key={p}
-              onClick={() => onPage(p)}
-              className={`${btn} tabular-nums ${p === page ? "!bg-primary !text-primary-foreground !border-primary font-semibold" : ""}`}
-            >
-              {p}
-            </button>
-          ),
-        )}
+        <span className="text-[12px] text-gray-500 tabular-nums">
+          Page <span className="font-semibold text-gray-700">{page}</span> of{" "}
+          <span className="font-semibold text-gray-700">{totalPages}</span>
+          <span className="block text-center text-[11px] text-gray-400">
+            {fmt(from)}–{fmt(to)} of {fmt(total)}
+          </span>
+        </span>
         <button
-          className={btn}
+          className={navBtn}
           disabled={page >= totalPages}
           onClick={() => onPage(page + 1)}
-          title="Next page"
         >
-          <ChevronRight className="h-3.5 w-3.5" />
+          Next <ChevronRight className="h-4 w-4" />
         </button>
-        <button
-          className={btn}
-          disabled={page >= totalPages}
-          onClick={() => onPage(totalPages)}
-          title="Last page"
-        >
-          <ChevronsRight className="h-3.5 w-3.5" />
-        </button>
+      </div>
+
+      {/* Desktop: full pagination with numbered pages + per-page selector */}
+      <div className="hidden md:flex px-4 py-2 flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-3">
+          <span className="text-[12px] text-gray-500 tabular-nums">
+            Showing{" "}
+            <span className="font-semibold text-gray-700">
+              {fmt(from)}–{fmt(to)}
+            </span>{" "}
+            of <span className="font-semibold text-gray-700">{fmt(total)}</span>
+          </span>
+          <label className="flex items-center gap-1.5 text-[12px] text-gray-500">
+            Per page
+            <select
+              value={pageSize}
+              onChange={(e) => onPageSize(parseInt(e.target.value, 10))}
+              className="h-7 px-1.5 border border-gray-200 rounded-md bg-white text-[12px] text-gray-700 outline-none focus:border-primary"
+            >
+              {PAGE_SIZES.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div className="flex items-center gap-1">
+          <button
+            className={btn}
+            disabled={page <= 1}
+            onClick={() => onPage(1)}
+            title="First page"
+          >
+            <ChevronsLeft className="h-3.5 w-3.5" />
+          </button>
+          <button
+            className={btn}
+            disabled={page <= 1}
+            onClick={() => onPage(page - 1)}
+            title="Previous page"
+          >
+            <ChevronLeft className="h-3.5 w-3.5" />
+          </button>
+          {pageList(page, totalPages).map((p, i) =>
+            p === "…" ? (
+              <span key={`e${i}`} className="px-1 text-[12px] text-gray-400">
+                …
+              </span>
+            ) : (
+              <button
+                key={p}
+                onClick={() => onPage(p)}
+                className={`${btn} tabular-nums ${p === page ? "!bg-primary !text-primary-foreground !border-primary font-semibold" : ""}`}
+              >
+                {p}
+              </button>
+            ),
+          )}
+          <button
+            className={btn}
+            disabled={page >= totalPages}
+            onClick={() => onPage(page + 1)}
+            title="Next page"
+          >
+            <ChevronRight className="h-3.5 w-3.5" />
+          </button>
+          <button
+            className={btn}
+            disabled={page >= totalPages}
+            onClick={() => onPage(totalPages)}
+            title="Last page"
+          >
+            <ChevronsRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
     </div>
   );

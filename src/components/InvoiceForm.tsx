@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Field } from "@/components/Field";
 import {
   PartyRepo,
@@ -12,9 +14,10 @@ import {
   SaleReturnRepo,
   PurchaseReturnRepo,
   PaymentRepo,
+  BankRepo,
 } from "@/repositories";
 import { partyBalances } from "@/lib/ledger";
-import type { Invoice, LineItem, Party, Item, PaymentMode } from "@/types";
+import type { Invoice, LineItem, Party, Item, PaymentMode, BankAccount } from "@/types";
 import { fmtMoney, today } from "@/lib/format";
 import { toast } from "sonner";
 import {
@@ -32,7 +35,9 @@ import {
 import { PrintableInvoice } from "@/components/PrintableInvoice";
 import { NumInput } from "@/components/NumInput";
 import { ModePills } from "@/components/ModePills";
+import { QuickAddPartyDialog, type QuickAddPartyDetails } from "@/components/QuickAddPartyDialog";
 import { genId, newBatch, commitBatch } from "@/repositories/base";
+import { stockShortfalls } from "@/lib/stock";
 
 interface Props {
   mode: "sale" | "purchase";
@@ -58,14 +63,17 @@ export function InvoiceForm({ mode, existing }: Props) {
         partyId: "",
         partyName: "",
         partyPhone: "",
-        gstEnabled: company.enableGst !== false,
+        // New bills start with GST off — the cashier turns it on per-bill
+        // when actually needed, instead of every bill defaulting to a tax invoice.
+        gstEnabled: false,
         lineItems: [],
         subtotal: 0,
         discount: 0,
+        shippingCharge: 0,
         taxAmount: 0,
         total: 0,
         paid: 0,
-        paymentMode: "cash",
+        paymentMode: "credit",
         createdAt: "",
         notes: "",
       },
@@ -76,6 +84,53 @@ export function InvoiceForm({ mode, existing }: Props) {
   const [allParties, setAllParties] = useState(() => PartyRepo.all());
   const parties = useMemo(() => allParties.filter(partyFilter), [allParties]);
   const [items, setItems] = useState(() => ItemRepo.all());
+  const [banks] = useState<BankAccount[]>(() => BankRepo.all());
+  // Vyapar-style entry: starts with 2 blank rows below the filled items,
+  // each a self-contained search-and-add row. Row ids (not indexes) so the
+  // untouched row keeps its own typed-but-not-submitted text when the other
+  // one is completed and shifts up.
+  const ITEM_ENTRY_ROWS = 2;
+  const [pendingRowIds, setPendingRowIds] = useState<string[]>(() =>
+    Array.from({ length: ITEM_ENTRY_ROWS }, () => genId()),
+  );
+  const pendingInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  // Called when a pending row's item is added — that row is retired. A
+  // fresh blank one is appended ONLY if that was the last blank row left
+  // (buffer would hit 0), not after every single completion — so filling
+  // the first of the 2 starting rows leaves the other one as-is (no new row
+  // yet), and only filling that last one too triggers a fresh replacement.
+  const completePendingRow = (rowId: string) => {
+    setPendingRowIds((prev) => {
+      const remaining = prev.filter((id) => id !== rowId);
+      return remaining.length === 0 ? [genId()] : remaining;
+    });
+  };
+  // After an item is picked, focus goes to THAT row's Qty field (id
+  // "qty-<lineId>") so the amount can be typed immediately — not to the next
+  // blank search row. Pressing Enter in Qty is what advances to the next row.
+  const focusQtyId = useRef<string | null>(null);
+  useEffect(() => {
+    if (focusQtyId.current) {
+      const el = document.getElementById(`qty-${focusQtyId.current}`) as HTMLInputElement | null;
+      el?.focus();
+      el?.select();
+      focusQtyId.current = null;
+    }
+  }, [inv.lineItems]);
+  const focusFirstPendingRow = () => {
+    pendingInputRefs.current[pendingRowIds[0]]?.focus();
+  };
+  // A party or item typed at the counter that doesn't exist yet is no longer
+  // silently created with blank/zero defaults — these open a quick-add
+  // dialog asking for the real details (phone/opening balance, or
+  // price/GST) before it's actually created.
+  const [quickAddParty, setQuickAddParty] = useState<{
+    name: string;
+    phone: string;
+    paid: number;
+    andPrint: boolean;
+  } | null>(null);
+  const [quickAddItem, setQuickAddItem] = useState<{ name: string; rowId: string } | null>(null);
   const partyRef = useRef<HTMLInputElement>(null);
   const phoneRef = useRef<HTMLInputElement>(null);
   const [partyQ, setPartyQ] = useState(existing?.partyName ?? "");
@@ -119,7 +174,12 @@ export function InvoiceForm({ mode, existing }: Props) {
 
   const roundEnabled = company.enableRoundOff !== false;
 
-  const recalc = (lines: LineItem[], discount = inv.discount, gst = gstOn) => {
+  const recalc = (
+    lines: LineItem[],
+    discount = inv.discount,
+    gst = gstOn,
+    shipping = inv.shippingCharge ?? 0,
+  ) => {
     const subtotal = r2(lines.reduce((s, l) => s + l.qty * l.price, 0));
     const afterLineDisc = r2(
       lines.reduce((s, l) => s + r2(l.qty * l.price * (1 - l.discountPct / 100)), 0),
@@ -132,7 +192,7 @@ export function InvoiceForm({ mode, existing }: Props) {
           ),
         )
       : 0;
-    const rawTotal = Math.max(0, r2(afterLineDisc + taxAmount - discount));
+    const rawTotal = Math.max(0, r2(afterLineDisc + taxAmount - discount + shipping));
     // Indian billing convention: round to the nearest whole rupee
     const total = roundEnabled ? Math.round(rawTotal) : rawTotal;
     const roundOff = r2(total - rawTotal);
@@ -154,13 +214,15 @@ export function InvoiceForm({ mode, existing }: Props) {
     setTimeout(() => partyRef.current?.focus(), 30);
   };
 
-  const addLineItem = (it: Item) => {
+  // Returns the id of the line that was added/updated, so the caller can move
+  // focus straight to that row's Qty field for fast entry.
+  const addLineItem = (it: Item): string => {
     // Repeat items cannot be added twice — increase quantity of the existing line instead
     const existingLine = inv.lineItems.find((l) => l.itemId === it.id);
     if (existingLine) {
       updateLine(existingLine.id, { qty: existingLine.qty + 1 });
       toast.info(`${it.name} — quantity increased to ${existingLine.qty + 1}`);
-      return;
+      return existingLine.id;
     }
     const line: LineItem = {
       id: genId(),
@@ -178,28 +240,43 @@ export function InvoiceForm({ mode, existing }: Props) {
     line.amount = r2(r2(line.qty * line.price * (1 - line.discountPct / 100)) * gstMult);
     const lines = [...inv.lineItems, line];
     setInv({ ...inv, lineItems: lines, ...recalc(lines) });
+    return line.id;
   };
 
-  // Type any name in the item search — if it doesn't exist yet, it is created
-  // automatically so price & quantity can be entered right here in the bill
-  const addNewItemByName = (name: string) => {
-    const existing = items.find((i) => i.name.trim().toLowerCase() === name.trim().toLowerCase());
-    if (existing) {
-      addLineItem(existing);
+  // Called from the quick-add-item dialog once the cashier has actually
+  // entered price/GST/unit — a name typed at the counter that doesn't match
+  // any known item is never auto-created with blank/zero defaults anymore.
+  const confirmQuickAddItem = (details: {
+    name: string;
+    unit: string;
+    gstRate: number;
+    salePrice: number;
+    purchasePrice: number;
+  }) => {
+    if (!quickAddItem) return;
+    const rowId = quickAddItem.rowId;
+    setQuickAddItem(null);
+    const existingMatch = items.find(
+      (i) => i.name.trim().toLowerCase() === details.name.trim().toLowerCase(),
+    );
+    if (existingMatch) {
+      focusQtyId.current = addLineItem(existingMatch);
+      completePendingRow(rowId);
       return;
     }
     const newItem = ItemRepo.add({
-      name: name.trim(),
-      unit: "pcs",
-      gstRate: 0,
-      purchasePrice: 0,
-      salePrice: 0,
+      name: details.name.trim(),
+      unit: details.unit.trim() || "pcs",
+      gstRate: Math.max(0, details.gstRate),
+      purchasePrice: Math.max(0, details.purchasePrice),
+      salePrice: Math.max(0, details.salePrice),
       stock: 0,
       openingStock: 0,
     }) as Item;
     setItems(ItemRepo.all());
-    addLineItem(newItem);
-    toast.success(`New item added: ${newItem.name} — enter price & qty in the row`);
+    focusQtyId.current = addLineItem(newItem);
+    completePendingRow(rowId);
+    toast.success(`New item added: ${newItem.name}`);
   };
 
   const updateLine = (id: string, patch: Partial<LineItem>) => {
@@ -224,6 +301,13 @@ export function InvoiceForm({ mode, existing }: Props) {
 
   const setDiscount = (d: number) => setInv({ ...inv, discount: d, ...recalc(inv.lineItems, d) });
 
+  const setShippingCharge = (s: number) =>
+    setInv({
+      ...inv,
+      shippingCharge: s,
+      ...recalc(inv.lineItems, inv.discount, gstOn, s),
+    });
+
   const toggleGst = () => {
     const newGst = !gstOn;
     const lines = inv.lineItems.map((l) => {
@@ -238,87 +322,68 @@ export function InvoiceForm({ mode, existing }: Props) {
     });
   };
 
-  const save = (andPrint = false) => {
-    if (savingRef.current) return; // double-click / Ctrl+S repeat protection
-
-    // ── Validations ─────────────────────────────────────────────
-    if (!inv.lineItems.length) {
-      toast.error("Add at least one item");
-      return;
-    }
-    const badLine = inv.lineItems.find((l) => !(l.qty > 0) || l.price < 0);
-    if (badLine) {
-      toast.error(`Check quantity/price for "${badLine.name}" — qty must be more than 0`);
-      return;
-    }
-    const number = inv.number.trim();
-    if (!number) {
-      toast.error(`${isSale ? "Invoice" : "Bill"} number is required`);
-      return;
-    }
-    const dupNo = repo.all().find((i) => i.number.trim() === number && i.id !== existing?.id);
-    if (dupNo) {
-      toast.error(`${isSale ? "Invoice" : "Bill"} number ${number} is already used — change it`);
-      setNumberEditing(true);
-      setTimeout(() => numberRef.current?.focus(), 50);
-      return;
-    }
-    // Paid can never exceed the bill total
-    let paid = inv.paid;
-    if (paid > inv.total) {
-      paid = inv.total;
-      toast.info(`Paid amount adjusted to bill total ${fmtMoney(inv.total)}`);
-    }
-
-    // Everything below must land together or not at all: the invoice write,
-    // its stock adjustments, and any Payment re-allocation. A shared batch
-    // commits them as one atomic Firestore write instead of independent
-    // fire-and-forget calls that could partially fail and desync stock/money.
-    const batch = newBatch();
-
-    // Resolve or auto-create party
-    let partyId = inv.partyId;
-    let partyName = inv.partyName || partyQ.trim();
-    const phone = phoneQ.trim();
-
-    if (!partyId) {
-      if (!partyName && !phone) {
-        toast.error("Enter customer name or phone");
-        partyRef.current?.focus();
-        return;
-      }
-      // Try match by phone first (unique), then by name
-      const byPhone = phone ? allParties.find((p) => (p.phone ?? "").trim() === phone) : null;
-      const byName = partyName
-        ? allParties.find((p) => p.name.toLowerCase() === partyName.toLowerCase())
-        : null;
-      const existingParty = byPhone ?? byName;
-
-      if (existingParty) {
-        partyId = existingParty.id;
-        partyName = existingParty.name;
-      } else {
-        // Auto-create
-        const newParty: Party = {
-          id: genId(),
-          name: partyName || `Party ${phone}`,
-          type: "both",
-          phone,
-          openingBalance: 0,
-          createdAt: new Date().toISOString(),
-        };
-        PartyRepo.addBatched(batch, newParty);
-        setAllParties(PartyRepo.all());
-        partyId = newParty.id;
-        partyName = newParty.name;
-        toast.success(`New party added: ${partyName}`);
-      }
-    }
-
+  // Runs once the party is fully resolved — either an existing match, or a
+  // brand-new one whose details were just collected via the quick-add
+  // dialog (never silently defaulted). Everything here is the actual write:
+  // the party (if new), the invoice, its stock/bank effects, and any
+  // Payment re-allocation land together in one atomic batch.
+  const finalizeSave = (
+    party: { id: string; name: string } | { create: Party },
+    phone: string,
+    paid: number,
+    andPrint: boolean,
+  ) => {
     savingRef.current = true;
     setSaving(true);
 
-    const finalInv: Invoice = { ...inv, number, paid, partyId, partyName, partyPhone: phone };
+    const batch = newBatch();
+
+    let partyId: string;
+    let partyName: string;
+    if ("create" in party) {
+      PartyRepo.addBatched(batch, party.create);
+      setAllParties(PartyRepo.all());
+      partyId = party.create.id;
+      partyName = party.create.name;
+      toast.success(`New party added: ${partyName}`);
+    } else {
+      partyId = party.id;
+      partyName = party.name;
+    }
+
+    const finalInv: Invoice = {
+      ...inv,
+      number: inv.number.trim(),
+      paid,
+      partyId,
+      partyName,
+      partyPhone: phone,
+      bankId: inv.paymentMode === "bank" ? inv.bankId : undefined,
+      bankPaidAmount: inv.paymentMode === "bank" ? paid : undefined,
+    };
+
+    // This invoice's own paid-at-billing amount can move money on a specific
+    // bank account. Reverse whatever it PREVIOUSLY moved (tracked via the
+    // bankPaidAmount snapshot, not `existing.paid` — paid can also grow
+    // later via unrelated Payment-page allocations that never touched this
+    // bank account) before applying what it moves now, in the same batch as
+    // everything else in this save.
+    if (existing?.paymentMode === "bank" && existing.bankId && (existing.bankPaidAmount ?? 0) > 0) {
+      BankRepo.adjustFieldBatched(
+        batch,
+        existing.bankId,
+        "balance",
+        isSale ? -existing.bankPaidAmount! : existing.bankPaidAmount!,
+      );
+    }
+    if (finalInv.paymentMode === "bank" && finalInv.bankId && (finalInv.bankPaidAmount ?? 0) > 0) {
+      BankRepo.adjustFieldBatched(
+        batch,
+        finalInv.bankId,
+        "balance",
+        isSale ? finalInv.bankPaidAmount! : -finalInv.bankPaidAmount!,
+      );
+    }
 
     // If editing dropped the settled amount (bill total reduced, or paid
     // lowered manually), Payment allocations tied to this invoice can now
@@ -391,15 +456,15 @@ export function InvoiceForm({ mode, existing }: Props) {
         );
       }
       // Credit limit alert for credit sales
-      const party = PartyRepo.get(partyId);
-      if (party?.creditLimit && partyBalance !== null) {
+      const partyRecord = PartyRepo.get(partyId);
+      if (partyRecord?.creditLimit && partyBalance !== null) {
         const newBalance =
           partyBalance +
           (finalInv.total - finalInv.paid) -
           (existing ? Math.max(0, (existing.total ?? 0) - (existing.paid ?? 0)) : 0);
-        if (newBalance > party.creditLimit) {
+        if (newBalance > partyRecord.creditLimit) {
           toast.warning(
-            `${partyName} crossed credit limit ${fmtMoney(party.creditLimit)} — balance now ${fmtMoney(newBalance)}`,
+            `${partyName} crossed credit limit ${fmtMoney(partyRecord.creditLimit)} — balance now ${fmtMoney(newBalance)}`,
           );
         }
       }
@@ -424,6 +489,107 @@ export function InvoiceForm({ mode, existing }: Props) {
     } else {
       navigate({ to: isSale ? "/sales" : "/purchase" });
     }
+  };
+
+  const save = (andPrint = false) => {
+    if (savingRef.current) return; // double-click / Ctrl+S repeat protection
+
+    // ── Validations ─────────────────────────────────────────────
+    if (!inv.lineItems.length) {
+      toast.error("Add at least one item");
+      return;
+    }
+    const badLine = inv.lineItems.find((l) => !(l.qty > 0) || l.price < 0);
+    if (badLine) {
+      toast.error(`Check quantity/price for "${badLine.name}" — qty must be more than 0`);
+      return;
+    }
+    if (isSale && company.allowNegativeStock === false) {
+      const shortfalls = stockShortfalls(inv.lineItems, existing?.lineItems ?? []);
+      if (shortfalls.length) {
+        toast.error(`Not enough stock — ${shortfalls.join(", ")}`);
+        return;
+      }
+    }
+    const number = inv.number.trim();
+    if (!number) {
+      toast.error(`${isSale ? "Invoice" : "Bill"} number is required`);
+      return;
+    }
+    const dupNo = repo.all().find((i) => i.number.trim() === number && i.id !== existing?.id);
+    if (dupNo) {
+      toast.error(`${isSale ? "Invoice" : "Bill"} number ${number} is already used — change it`);
+      setNumberEditing(true);
+      setTimeout(() => numberRef.current?.focus(), 50);
+      return;
+    }
+    if (inv.paymentMode === "bank" && !inv.bankId) {
+      toast.error("Select which bank account this goes to");
+      return;
+    }
+    // Paid can never exceed the bill total
+    let paid = inv.paid;
+    if (paid > inv.total) {
+      paid = inv.total;
+      toast.info(`Paid amount adjusted to bill total ${fmtMoney(inv.total)}`);
+    }
+
+    const partyId = inv.partyId;
+    const partyName = inv.partyName || partyQ.trim();
+    const phone = phoneQ.trim();
+
+    if (partyId) {
+      finalizeSave({ id: partyId, name: partyName }, phone, paid, andPrint);
+      return;
+    }
+    if (!partyName && !phone) {
+      toast.error("Enter customer name or phone");
+      partyRef.current?.focus();
+      return;
+    }
+    // Try match by phone first (unique), then by name
+    const byPhone = phone ? allParties.find((p) => (p.phone ?? "").trim() === phone) : null;
+    const byName = partyName
+      ? allParties.find((p) => p.name.toLowerCase() === partyName.toLowerCase())
+      : null;
+    const existingParty = byPhone ?? byName;
+    if (existingParty) {
+      finalizeSave({ id: existingParty.id, name: existingParty.name }, phone, paid, andPrint);
+      return;
+    }
+    // No match — this would previously auto-create a bare-bones party with
+    // no phone/opening-balance recorded. Ask for the real details instead.
+    setQuickAddParty({ name: partyName || `Party ${phone}`, phone, paid, andPrint });
+  };
+
+  const confirmQuickAddParty = (details: QuickAddPartyDetails) => {
+    if (!quickAddParty) return;
+    const name = details.name.trim() || quickAddParty.name;
+    const phone = details.phone.trim();
+    const { paid, andPrint } = quickAddParty;
+    setQuickAddParty(null);
+    // The name may have been EDITED inside the dialog — re-check so a
+    // same-phone or same-name party (any capitalisation) is reused, never
+    // duplicated. Mirrors confirmQuickAddItem.
+    const match =
+      (phone ? allParties.find((p) => (p.phone ?? "").trim() === phone) : undefined) ??
+      allParties.find((p) => p.name.trim().toLowerCase() === name.toLowerCase());
+    if (match) {
+      toast.info(`Using existing party: ${match.name}`);
+      finalizeSave({ id: match.id, name: match.name }, phone, paid, andPrint);
+      return;
+    }
+    const newParty: Party = {
+      id: genId(),
+      name,
+      type: "both",
+      phone: phone || undefined,
+      openingBalance: details.openingBalance || 0,
+      gstin: details.gstin.trim() || undefined,
+      creditLimit: details.creditLimit || undefined,
+      createdAt: new Date().toISOString(),
+    };
+    finalizeSave({ create: newParty }, phone, paid, andPrint);
   };
 
   useEffect(() => {
@@ -453,8 +619,7 @@ export function InvoiceForm({ mode, existing }: Props) {
               {existing ? "Edit" : "New"} {isSale ? "Sale Invoice" : "Purchase Bill"}
             </h1>
             <p className="text-[11px] text-muted-foreground">
-              <span className="font-mono font-semibold text-foreground">{inv.number}</span> ·
-              Tab/Enter to move · Ctrl+S save · Esc cancel
+              <span className="font-mono font-semibold text-foreground">{inv.number}</span>
             </p>
           </div>
         </div>
@@ -469,30 +634,6 @@ export function InvoiceForm({ mode, existing }: Props) {
             />
             <span className="text-[12px] font-semibold">GST Bill</span>
           </label>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => navigate({ to: isSale ? "/sales" : "/purchase" })}
-          >
-            <X className="h-3.5 w-3.5" /> Cancel
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => save(true)} disabled={saving}>
-            <Printer className="h-3.5 w-3.5" /> Save & Print
-          </Button>
-          <Button
-            size="sm"
-            onClick={() => save()}
-            disabled={saving}
-            className="bg-primary text-primary-foreground"
-          >
-            {saving ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Save className="h-3.5 w-3.5" />
-            )}
-            {saving ? "Saving…" : "Save"}
-            {!saving && <kbd className="ml-1 text-[10px] opacity-80">Ctrl+S</kbd>}
-          </Button>
         </div>
       </div>
 
@@ -520,12 +661,12 @@ export function InvoiceForm({ mode, existing }: Props) {
               </span>
             ) : partyQ || phoneQ ? (
               <span className="text-[11px] inline-flex items-center gap-1 text-primary font-medium bg-primary-soft px-2 py-0.5 rounded">
-                <UserPlus className="h-3 w-3" /> Will auto-create on save
+                <UserPlus className="h-3 w-3" /> New party — details asked on save
               </span>
             ) : null}
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-            <div className="relative lg:col-span-2">
+            <div className="relative">
               <label className="flex flex-col gap-1 text-[12px]">
                 <span className="text-muted-foreground font-medium">
                   {isSale ? "Customer Name" : "Supplier Name"} *
@@ -621,10 +762,8 @@ export function InvoiceForm({ mode, existing }: Props) {
               value={inv.date}
               onChange={(e) => setInv({ ...inv, date: e.target.value })}
             />
-          </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
-            <div className="flex flex-col gap-1 text-[12px] md:col-span-1">
+            <div className="flex flex-col gap-1 text-[12px]">
               <span className="text-muted-foreground font-medium">
                 {isSale ? "Invoice #" : "Bill #"}
               </span>
@@ -674,22 +813,15 @@ export function InvoiceForm({ mode, existing }: Props) {
           </div>
         </div>
 
-        {/* Line items — search bar lives OUTSIDE the table's scroll container
-            so its suggestion dropdown can never be clipped/hidden by it */}
+        {/* Line items — each blank row below the filled ones is its own
+            search-and-add field (Vyapar-style), not a separate search bar */}
         <div className="border rounded-lg bg-card shadow-card">
           <div className="px-4 py-2.5 border-b bg-muted/50 flex items-center justify-between rounded-t-lg">
             <span className="text-[13px] font-semibold">Items ({inv.lineItems.length})</span>
             <span className="text-[11px] text-muted-foreground">
-              Search below to add items
+              Type an item name in a row below to add it
             </span>
           </div>
-          <ItemSearchBar
-            items={items}
-            onAdd={addLineItem}
-            onAddNew={addNewItemByName}
-            gstOn={gstOn}
-            isSale={isSale}
-          />
           <div className="overflow-x-auto rounded-b-lg">
             <table className="w-full text-[13px] min-w-[720px]">
               <thead className="text-[11px] text-muted-foreground uppercase tracking-wider">
@@ -714,8 +846,15 @@ export function InvoiceForm({ mode, existing }: Props) {
                     </td>
                     <td className="py-1.5 px-1">
                       <NumInput
+                        id={`qty-${l.id}`}
                         value={l.qty}
                         onValue={(n) => updateLine(l.id, { qty: n })}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            focusFirstPendingRow();
+                          }
+                        }}
                         className="w-full h-7 px-1.5 text-right border rounded bg-background focus:border-primary outline-none"
                       />
                     </td>
@@ -763,103 +902,221 @@ export function InvoiceForm({ mode, existing }: Props) {
                     </td>
                   </tr>
                 ))}
-                {inv.lineItems.length === 0 && (
-                  <tr className="border-t">
-                    <td
-                      colSpan={gstOn ? 9 : 8}
-                      className="px-3 py-6 text-center text-muted-foreground text-[12px]"
-                    >
-                      No items yet — type in the search box above to add
-                    </td>
-                  </tr>
-                )}
+                {pendingRowIds.map((id) => (
+                  <ItemEntryRow
+                    key={id}
+                    items={items}
+                    gstOn={gstOn}
+                    isSale={isSale}
+                    onAdd={(it) => {
+                      focusQtyId.current = addLineItem(it);
+                      completePendingRow(id);
+                    }}
+                    onAddNew={(name) => setQuickAddItem({ name, rowId: id })}
+                    registerInput={(el) => {
+                      pendingInputRefs.current[id] = el;
+                    }}
+                  />
+                ))}
               </tbody>
             </table>
           </div>
         </div>
 
         {/* Totals + notes */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <div className="lg:col-span-2 bg-card border rounded-lg shadow-card p-4">
-            <label className="flex flex-col gap-1 text-[12px]">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
+          <div className="lg:col-span-2 border rounded-lg bg-card shadow-card overflow-hidden text-sm">
+            {/* Amount breakdown */}
+            <div className="p-4 space-y-2.5">
+              <Row label="Subtotal" value={fmtMoney(inv.subtotal)} />
+              {gstOn && <Row label="Tax (GST)" value={fmtMoney(inv.taxAmount)} />}
+              <div className="flex justify-between items-center gap-2">
+                <span className="text-muted-foreground">Extra Discount</span>
+                <NumInput
+                  value={inv.discount}
+                  onValue={(n) => setDiscount(n)}
+                  className="w-28 h-8 px-2 text-right border rounded-md bg-background focus:border-primary focus:ring-2 focus:ring-ring/20 outline-none tabular-nums"
+                />
+              </div>
+              {isSale && (
+                <div className="flex justify-between items-center gap-2">
+                  <span className="text-muted-foreground">Shipping Charge</span>
+                  <NumInput
+                    value={inv.shippingCharge ?? 0}
+                    onValue={(n) => setShippingCharge(n)}
+                    className="w-28 h-8 px-2 text-right border rounded-md bg-background focus:border-primary focus:ring-2 focus:ring-ring/20 outline-none tabular-nums"
+                  />
+                </div>
+              )}
+              {!!inv.roundOff && Math.abs(inv.roundOff) > 0.001 && (
+                <Row
+                  label="Round Off"
+                  value={`${inv.roundOff > 0 ? "+" : "−"}${fmtMoney(Math.abs(inv.roundOff))}`}
+                />
+              )}
+            </div>
+
+            {/* Total — its own band so it reads as the one number that matters */}
+            <div className="flex justify-between items-center gap-2 px-4 py-3 bg-muted/40 border-y font-bold text-lg">
+              <span>Total</span>
+              <span className="tabular-nums text-primary">{fmtMoney(inv.total)}</span>
+            </div>
+
+            {/* Payment */}
+            <div className="p-4 space-y-2.5">
+              <div className="flex justify-between items-center gap-2">
+                <span className="text-muted-foreground">Payment Mode</span>
+                <ModePills
+                  value={inv.paymentMode}
+                  onChange={(newMode: PaymentMode) =>
+                    setInv({
+                      ...inv,
+                      paymentMode: newMode,
+                      paid: newMode === "credit" ? 0 : inv.paid,
+                      bankId: newMode === "bank" ? inv.bankId : undefined,
+                    })
+                  }
+                  modes={["cash", "bank", "credit"]}
+                />
+              </div>
+              {inv.paymentMode === "bank" && (
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-muted-foreground text-[12px]">Bank Account *</span>
+                  <select
+                    value={inv.bankId ?? ""}
+                    onChange={(e) => setInv({ ...inv, bankId: e.target.value || undefined })}
+                    className="h-9 px-2 border rounded-md bg-background focus:border-primary focus:ring-2 focus:ring-ring/20 outline-none text-[13px]"
+                  >
+                    <option value="">Select bank account…</option>
+                    {banks.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name}
+                        {b.accountNumber ? ` — ${b.accountNumber}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                  {banks.length === 0 && (
+                    <p className="text-[11px] text-amber-600">
+                      No bank accounts set up yet — add one from Bank Accounts first.
+                    </p>
+                  )}
+                </div>
+              )}
+              <div className="flex justify-between items-center gap-2 pt-1">
+                <span className="text-muted-foreground">
+                  {mode === "sale" ? "Received Amount" : "Paid Amount"}
+                </span>
+                {inv.paymentMode === "credit" ? (
+                  <span className="text-[12px] text-muted-foreground select-none">
+                    ₹0.00 — {mode === "sale" ? "will receive later" : "will pay later"}
+                  </span>
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setInv({ ...inv, paid: inv.total })}
+                      className="h-8 px-2.5 rounded-md border bg-success-soft text-success text-[11px] font-semibold hover:opacity-80 focus:ring-2 focus:ring-ring/20 outline-none transition"
+                      title="Received full amount"
+                    >
+                      Full
+                    </button>
+                    <NumInput
+                      value={inv.paid}
+                      onValue={(n) => setInv({ ...inv, paid: n })}
+                      className="w-24 h-8 px-2 text-right border rounded-md bg-background focus:border-primary focus:ring-2 focus:ring-ring/20 outline-none tabular-nums"
+                    />
+                  </div>
+                )}
+              </div>
+              <div className="flex justify-between items-center gap-2 pt-2 mt-1 border-t font-semibold">
+                <span>Balance Due</span>
+                <span
+                  className={`tabular-nums ${inv.total - inv.paid > 0 ? "text-destructive" : "text-success"}`}
+                >
+                  {fmtMoney(Math.max(0, inv.total - inv.paid))}
+                </span>
+              </div>
+              {/* End of the Tab journey: Save right where the cashier finishes
+                  typing — explicit tabindex so macOS Safari can Tab to it */}
+              <button
+                type="button"
+                tabIndex={0}
+                onClick={() => save()}
+                disabled={saving}
+                className="w-full h-10 mt-3 rounded-md bg-primary text-primary-foreground font-bold text-sm hover:opacity-90 transition disabled:opacity-60 flex items-center justify-center gap-2 outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2"
+              >
+                {saving ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4" />
+                )}
+                {saving ? "Saving…" : `Save ${isSale ? "Sale" : "Purchase"}`}
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-card border rounded-lg shadow-card p-4">
+            <label className="flex flex-col gap-1.5 text-[12px] h-full">
               <span className="text-muted-foreground font-medium uppercase text-[11px] tracking-wider">
                 Notes / Terms
+                <span className="normal-case font-normal text-muted-foreground/70"> (optional)</span>
               </span>
               <textarea
                 value={inv.notes ?? ""}
                 onChange={(e) => setInv({ ...inv, notes: e.target.value })}
                 placeholder="Add any note or terms & conditions…"
-                className="min-h-[100px] px-3 py-2 border rounded-md bg-background focus:border-primary focus:ring-2 focus:ring-ring/20 outline-none"
+                className="flex-1 min-h-[140px] px-3 py-2 border rounded-md bg-background focus:border-primary focus:ring-2 focus:ring-ring/20 outline-none resize-none"
               />
             </label>
           </div>
-          <div className="border rounded-lg bg-card shadow-card p-4 space-y-2 text-sm">
-            <Row label="Subtotal" value={fmtMoney(inv.subtotal)} />
-            {gstOn && <Row label="Tax (GST)" value={fmtMoney(inv.taxAmount)} />}
-            <div className="flex justify-between items-center gap-2">
-              <span className="text-muted-foreground">Extra Discount</span>
-              <NumInput
-                value={inv.discount}
-                onValue={(n) => setDiscount(n)}
-                className="w-28 h-8 px-2 text-right border rounded-md bg-background focus:border-primary outline-none tabular-nums"
-              />
-            </div>
-            {!!inv.roundOff && Math.abs(inv.roundOff) > 0.001 && (
-              <Row
-                label="Round Off"
-                value={`${inv.roundOff > 0 ? "+" : "−"}${fmtMoney(Math.abs(inv.roundOff))}`}
-              />
-            )}
-            <div className="flex justify-between items-center gap-2 pt-2 mt-1 border-t font-bold text-lg">
-              <span>Total</span>
-              <span className="tabular-nums text-primary">{fmtMoney(inv.total)}</span>
-            </div>
-            <div className="flex flex-col gap-1.5 pt-2 mt-1 border-t">
-              <span className="text-muted-foreground">Payment Mode</span>
-              <ModePills
-                value={inv.paymentMode}
-                onChange={(mode: PaymentMode) =>
-                  setInv({ ...inv, paymentMode: mode, paid: mode === "credit" ? 0 : inv.paid })
-                }
-                modes={["cash", "upi", "bank", "cheque", "credit"]}
-              />
-            </div>
-            <div className="flex justify-between items-center gap-2">
-              <span className="text-muted-foreground">Paid Amount</span>
-              {inv.paymentMode === "credit" ? (
-                <span className="text-[12px] text-muted-foreground select-none">
-                  ₹0.00 — will pay later
-                </span>
-              ) : (
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setInv({ ...inv, paid: inv.total })}
-                    className="h-8 px-2 rounded-md border bg-success-soft text-success text-[11px] font-semibold hover:opacity-80 transition"
-                    title="Received full amount"
-                  >
-                    Full
-                  </button>
-                  <NumInput
-                    value={inv.paid}
-                    onValue={(n) => setInv({ ...inv, paid: n })}
-                    className="w-24 h-8 px-2 text-right border rounded-md bg-background focus:border-primary outline-none tabular-nums"
-                  />
-                </div>
-              )}
-            </div>
-            <div className="flex justify-between items-center gap-2 pt-1 font-semibold">
-              <span>Balance Due</span>
-              <span
-                className={`tabular-nums ${inv.total - inv.paid > 0 ? "text-destructive" : "text-success"}`}
-              >
-                {fmtMoney(Math.max(0, inv.total - inv.paid))}
-              </span>
-            </div>
-          </div>
         </div>
       </div>
+
+      {/* Bottom action bar — kept last in DOM/tab order on purpose: the whole
+          form (party, items, totals, notes) is fully keyboard-navigable via
+          Tab, and this is where that flow naturally lands to save. */}
+      <div className="px-4 md:px-5 py-3 border-t bg-card flex items-center justify-end gap-2 flex-wrap">
+        <span className="text-[11px] text-muted-foreground mr-auto">
+          Tab/Enter to move · Ctrl+S save · Esc cancel
+        </span>
+        <Button
+          size="sm"
+          onClick={() => save()}
+          disabled={saving}
+          className="bg-primary text-primary-foreground"
+        >
+          {saving ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Save className="h-3.5 w-3.5" />
+          )}
+          {saving ? "Saving…" : "Save"}
+          {!saving && <kbd className="ml-1 text-[10px] opacity-80">Ctrl+S</kbd>}
+        </Button>
+        <Button variant="outline" size="sm" onClick={() => save(true)} disabled={saving}>
+          <Printer className="h-3.5 w-3.5" /> Save & Print
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => navigate({ to: isSale ? "/sales" : "/purchase" })}
+        >
+          <X className="h-3.5 w-3.5" /> Cancel
+        </Button>
+      </div>
       <PrintableInvoice inv={inv} company={company} mode={mode} />
+      <QuickAddPartyDialog
+        draft={quickAddParty}
+        isSale={isSale}
+        onCancel={() => setQuickAddParty(null)}
+        onConfirm={confirmQuickAddParty}
+      />
+      <QuickAddItemDialog
+        draft={quickAddItem}
+        isSale={isSale}
+        onCancel={() => setQuickAddItem(null)}
+        onConfirm={confirmQuickAddItem}
+      />
     </div>
   );
 }
@@ -873,23 +1130,54 @@ function Row({ label, value, bold }: { label: string; value: string; bold?: bool
   );
 }
 
-function ItemSearchBar({
+function ItemEntryRow({
   items,
   onAdd,
   onAddNew,
   gstOn,
   isSale,
+  registerInput,
 }: {
   items: Item[];
   onAdd: (i: Item) => void;
   onAddNew: (name: string) => void;
   gstOn: boolean;
   isSale: boolean;
+  registerInput: (el: HTMLInputElement | null) => void;
 }) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const [idx, setIdx] = useState(0);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputElRef = useRef<HTMLInputElement | null>(null);
+  const [dropdownRect, setDropdownRect] = useState<{
+    top: number;
+    left: number;
+    width: number;
+  } | null>(null);
+
+  // The row lives inside a horizontally-scrollable table
+  // (overflow-x-auto), which per the CSS spec also forces overflow-y to
+  // "auto" once overflow-x isn't "visible" — so a plain absolutely
+  // positioned dropdown gets silently clipped by the table's own scroll
+  // box. Render it through a portal instead, positioned in viewport
+  // coordinates from the input's own rect, so it floats above everything.
+  useEffect(() => {
+    if (!open) return;
+    const updateRect = () => {
+      const el = inputElRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      setDropdownRect({ top: r.bottom + 4, left: r.left, width: r.width });
+    };
+    updateRect();
+    window.addEventListener("scroll", updateRect, true);
+    window.addEventListener("resize", updateRect);
+    return () => {
+      window.removeEventListener("scroll", updateRect, true);
+      window.removeEventListener("resize", updateRect);
+    };
+  }, [open]);
+
   // Empty query = NO suggestions — otherwise Enter/ArrowDown on the empty box
   // would act on an invisible list of all items and add a phantom line
   const suggests = q.trim()
@@ -909,30 +1197,25 @@ function ItemSearchBar({
     trimmed.length > 0 && !items.some((i) => i.name.trim().toLowerCase() === trimmed.toLowerCase());
   const optionCount = suggests.length + (showAddNew ? 1 : 0);
 
-  const reset = () => {
-    setQ("");
-    setOpen(false);
-    setIdx(0);
-    setTimeout(() => inputRef.current?.focus(), 30);
-  };
-
-  const pick = (it: Item) => {
-    onAdd(it);
-    reset();
-  };
-  const pickNew = () => {
-    onAddNew(trimmed);
-    reset();
-  };
+  // No local reset()/refocus here — once an item is added this row is
+  // retired by the parent (a fresh blank row takes its id's place), and the
+  // parent moves focus to the new line's Qty field, not back into this row.
+  const pick = (it: Item) => onAdd(it);
+  const pickNew = () => onAddNew(trimmed);
   const choose = (i: number) => {
     if (i < suggests.length) pick(suggests[i]);
     else if (showAddNew) pickNew();
   };
 
   return (
-    <div className="p-2 relative bg-primary-soft/40 border-b">
-      <input
-          ref={inputRef}
+    <tr className="border-t hover:bg-accent/20">
+      <td className="px-3 py-1.5"></td>
+      <td className="px-3 py-1.5">
+        <input
+          ref={(el) => {
+            inputElRef.current = el;
+            registerInput(el);
+          }}
           value={q}
           onChange={(e) => {
             setQ(e.target.value);
@@ -953,55 +1236,213 @@ function ItemSearchBar({
               if (optionCount > 0) choose(idx);
             }
           }}
-          placeholder="🔍  Type item name — pick from list or add as new item (Enter to add)"
-          className="w-full h-9 px-3 border rounded-md bg-background focus:border-primary focus:ring-2 focus:ring-ring/20 outline-none text-sm"
+          placeholder="Type item name to add…"
+          className="w-full h-8 px-2 border rounded bg-background focus:border-primary focus:ring-2 focus:ring-ring/20 outline-none text-sm"
         />
-      {open && optionCount > 0 && (
-          <div className="absolute z-30 top-full left-2 right-2 -mt-0.5 border rounded-md bg-popover shadow-elevated max-h-72 overflow-auto">
-            {suggests.map((it, i) => (
-              <div
-                key={it.id}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  pick(it);
-                }}
-                className={`px-3 py-2 text-sm cursor-pointer flex justify-between ${i === idx ? "bg-accent" : "hover:bg-accent"}`}
-              >
-                <div>
-                  <div className="font-semibold">{it.name}</div>
-                  <div className="text-[11px] text-muted-foreground">
-                    Stock: {it.stock} {it.unit}
+        {open &&
+          optionCount > 0 &&
+          dropdownRect &&
+          createPortal(
+            <div
+              style={{
+                position: "fixed",
+                top: dropdownRect.top,
+                left: dropdownRect.left,
+                width: dropdownRect.width,
+              }}
+              className="z-50 border rounded-md bg-popover shadow-elevated max-h-72 overflow-auto"
+            >
+              {suggests.map((it, i) => (
+                <div
+                  key={it.id}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    pick(it);
+                  }}
+                  className={`px-3 py-2 text-sm cursor-pointer flex justify-between ${i === idx ? "bg-accent" : "hover:bg-accent"}`}
+                >
+                  <div>
+                    <div className="font-semibold">{it.name}</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      Stock: {it.stock} {it.unit}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="font-semibold tabular-nums">
+                      {fmtMoney(isSale ? it.salePrice || it.purchasePrice : it.purchasePrice)}
+                    </div>
+                    {gstOn && (
+                      <div className="text-[11px] text-muted-foreground">GST {it.gstRate}%</div>
+                    )}
                   </div>
                 </div>
-                <div className="text-right">
-                  <div className="font-semibold tabular-nums">
-                    {fmtMoney(isSale ? it.salePrice || it.purchasePrice : it.purchasePrice)}
-                  </div>
-                  {gstOn && (
-                    <div className="text-[11px] text-muted-foreground">GST {it.gstRate}%</div>
-                  )}
+              ))}
+              {showAddNew && (
+                <div
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    pickNew();
+                  }}
+                  className={`px-3 py-2 text-sm cursor-pointer flex items-center gap-2 border-t ${idx === suggests.length ? "bg-accent" : "hover:bg-accent"}`}
+                >
+                  <span className="h-5 w-5 rounded bg-primary-soft text-primary flex items-center justify-center text-xs font-bold">
+                    +
+                  </span>
+                  <span>
+                    Add "<span className="font-semibold">{trimmed}</span>" as new item
+                  </span>
                 </div>
-              </div>
-            ))}
-            {showAddNew && (
-              <div
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  pickNew();
-                }}
-                className={`px-3 py-2 text-sm cursor-pointer flex items-center gap-2 border-t ${idx === suggests.length ? "bg-accent" : "hover:bg-accent"}`}
-              >
-                <span className="h-5 w-5 rounded bg-primary-soft text-primary flex items-center justify-center text-xs font-bold">
-                  +
-                </span>
-                <span>
-                  Add "<span className="font-semibold">{trimmed}</span>" as new item — set price &
-                  qty in the row
-                </span>
-              </div>
-            )}
+              )}
+            </div>,
+            document.body,
+          )}
+      </td>
+      <td className="py-1.5 px-1">
+        <input
+          disabled
+          className="w-full h-7 px-1.5 text-right border rounded bg-muted/40 text-muted-foreground/50 outline-none cursor-not-allowed"
+        />
+      </td>
+      <td className="py-1.5 px-1">
+        <input
+          disabled
+          className="w-full h-7 px-1.5 border rounded bg-muted/40 text-muted-foreground/50 outline-none cursor-not-allowed"
+        />
+      </td>
+      <td className="py-1.5 px-1">
+        <input
+          disabled
+          className="w-full h-7 px-1.5 text-right border rounded bg-muted/40 text-muted-foreground/50 outline-none cursor-not-allowed"
+        />
+      </td>
+      <td className="py-1.5 px-1">
+        <input
+          disabled
+          className="w-full h-7 px-1.5 text-right border rounded bg-muted/40 text-muted-foreground/50 outline-none cursor-not-allowed"
+        />
+      </td>
+      {gstOn && (
+        <td className="py-1.5 px-1">
+          <input
+            disabled
+            className="w-full h-7 px-1.5 text-right border rounded bg-muted/40 text-muted-foreground/50 outline-none cursor-not-allowed"
+          />
+        </td>
+      )}
+      <td className="py-1.5 px-1">
+        <input
+          disabled
+          className="w-full h-7 px-1.5 text-right border rounded bg-muted/40 text-muted-foreground/50 outline-none cursor-not-allowed"
+        />
+      </td>
+      <td className="py-1.5 px-1"></td>
+    </tr>
+  );
+}
+
+function QuickAddItemDialog({
+  draft,
+  isSale,
+  onCancel,
+  onConfirm,
+}: {
+  draft: { name: string; rowId: string } | null;
+  isSale: boolean;
+  onCancel: () => void;
+  onConfirm: (details: {
+    name: string;
+    unit: string;
+    gstRate: number;
+    salePrice: number;
+    purchasePrice: number;
+  }) => void;
+}) {
+  const [name, setName] = useState("");
+  const [unit, setUnit] = useState("pcs");
+  const [gstRate, setGstRate] = useState(0);
+  const [salePrice, setSalePrice] = useState(0);
+  const [purchasePrice, setPurchasePrice] = useState(0);
+  const firstRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (draft) {
+      setName(draft.name);
+      setUnit("pcs");
+      setGstRate(0);
+      setSalePrice(0);
+      setPurchasePrice(0);
+      setTimeout(() => firstRef.current?.focus(), 50);
+    }
+  }, [draft]);
+
+  if (!draft) return null;
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) {
+      toast.error("Name required");
+      return;
+    }
+    onConfirm({ name, unit, gstRate, salePrice, purchasePrice });
+  };
+
+  return (
+    <Dialog open onOpenChange={(v) => !v && onCancel()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <UserPlus className="h-4 w-4" />
+            New Item
+          </DialogTitle>
+        </DialogHeader>
+        <p className="text-[12px] text-muted-foreground -mt-2">
+          "{draft.name}" isn't in your items list yet — set its price & GST before adding it to
+          this {isSale ? "invoice" : "bill"}.
+        </p>
+        <form onSubmit={submit} className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="col-span-2">
+            <Field
+              ref={firstRef}
+              label="Name *"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
           </div>
-        )}
-    </div>
+          <Field label="Unit" value={unit} onChange={(e) => setUnit(e.target.value)} />
+          <Field
+            label="GST Rate (%)"
+            type="number"
+            value={gstRate}
+            onChange={(e) => setGstRate(Math.max(0, parseFloat(e.target.value) || 0))}
+          />
+          <Field
+            label={isSale ? "Sale Price *" : "Purchase Price *"}
+            type="number"
+            value={isSale ? salePrice : purchasePrice}
+            onChange={(e) => {
+              const v = Math.max(0, parseFloat(e.target.value) || 0);
+              if (isSale) setSalePrice(v);
+              else setPurchasePrice(v);
+            }}
+          />
+          <Field
+            label={isSale ? "Purchase Price" : "Sale Price"}
+            type="number"
+            value={isSale ? purchasePrice : salePrice}
+            onChange={(e) => {
+              const v = Math.max(0, parseFloat(e.target.value) || 0);
+              if (isSale) setPurchasePrice(v);
+              else setSalePrice(v);
+            }}
+          />
+          <div className="col-span-2 flex justify-end gap-2 mt-2">
+            <Button type="button" variant="outline" onClick={onCancel}>
+              Cancel
+            </Button>
+            <Button type="submit">Add & Continue</Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }

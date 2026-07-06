@@ -21,10 +21,15 @@ import {
   CornerUpLeft,
   ChevronDown,
   ChevronRight,
+  LogOut,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWorkspace } from "@/store/workspace";
 import { useState } from "react";
+import { signOut } from "firebase/auth";
+import { auth } from "@/lib/firebase";
+import { stopRepos } from "@/repositories";
+import { toast } from "sonner";
 
 type NavItem = { path: string; label: string; icon: any; key?: string };
 type NavGroup = { title: string; items: NavItem[]; collapsible?: boolean; defaultOpen?: boolean };
@@ -61,17 +66,18 @@ const groups: NavGroup[] = [
       { path: "/expenses", label: "Expenses", icon: Receipt, key: "6" },
     ],
   },
-  {
-    title: "Payments",
-    collapsible: true,
-    defaultOpen: false,
-    items: [{ path: "/payments", label: "Payments", icon: Wallet }],
-  },
+  // {
+  //   title: "Payments",
+  //   collapsible: true,
+  //   defaultOpen: false,
+  //   items: [],
+  // },
   {
     title: "Cash & Bank",
     items: [
       { path: "/bank", label: "Bank Accounts", icon: Landmark },
-      { path: "/cash", label: "Cash in Hand", icon: Banknote },
+      { path: "/cash", label: "Cash on Hand", icon: Banknote },
+      { path: "/payments", label: "Payments", icon: Wallet }
     ],
   },
   {
@@ -89,6 +95,8 @@ export function Sidebar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const collapsed = useWorkspace((s) => s.sidebarCollapsed);
   const toggle = useWorkspace((s) => s.toggleSidebar);
+  const mobileNavOpen = useWorkspace((s) => s.mobileNavOpen);
+  const setMobileNavOpen = useWorkspace((s) => s.setMobileNavOpen);
 
   const initOpen: Record<string, boolean> = {};
   groups.forEach((g) => {
@@ -104,12 +112,22 @@ export function Sidebar() {
     g.items.some((it) => it.path === pathname || (it.path !== "/" && pathname.startsWith(it.path)));
 
   return (
-    <aside
-      className={cn(
-        "shrink-0 border-r bg-sidebar text-sidebar-foreground flex flex-col transition-[width] duration-200",
-        collapsed ? "w-14" : "w-60",
+    <>
+      {/* Backdrop — mobile drawer only, tapping it closes the menu */}
+      {mobileNavOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/40 md:hidden"
+          onClick={() => setMobileNavOpen(false)}
+        />
       )}
-    >
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-50 w-60 border-r bg-sidebar text-sidebar-foreground flex flex-col transition-transform duration-200",
+          "md:relative md:z-auto md:translate-x-0 md:transition-[width]",
+          mobileNavOpen ? "translate-x-0" : "-translate-x-full",
+          collapsed && "md:w-14",
+        )}
+      >
       {/* Brand */}
       <div className="h-14 flex items-center gap-2.5 bg-gradient-brand text-brand-foreground shrink-0 px-3">
         <div className="h-8 w-8 rounded-md bg-white/15 backdrop-blur flex items-center justify-center ring-1 ring-white/20 shrink-0">
@@ -164,13 +182,14 @@ export function Sidebar() {
                     <Link
                       key={it.path}
                       to={it.path}
+                      onClick={() => setMobileNavOpen(false)}
                       title={collapsed ? it.label : undefined}
                       className={cn(
                         "group flex items-center gap-2.5 py-2 border-l-[3px] border-transparent transition-colors",
                         collapsed ? "px-3 justify-center" : "px-4",
                         "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
                         itemActive &&
-                          "bg-sidebar-accent text-sidebar-accent-foreground border-primary font-semibold",
+                        "bg-sidebar-accent text-sidebar-accent-foreground border-primary font-semibold",
                       )}
                     >
                       <Icon
@@ -191,9 +210,25 @@ export function Sidebar() {
         })}
       </nav>
 
+      {/* Logout — mobile drawer only; desktop keeps it in the Topbar */}
+      <button
+        onClick={async () => {
+          if (!confirm("Logout from BizDesk?")) return;
+          try {
+            stopRepos();
+            await signOut(auth);
+          } catch {
+            toast.error("Logout failed — check your connection");
+          }
+        }}
+        className="md:hidden border-t border-sidebar-border h-11 flex items-center justify-center gap-2 text-[12px] font-medium text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition"
+      >
+        <LogOut className="h-4 w-4" /> Logout
+      </button>
+
       <button
         onClick={toggle}
-        className="border-t border-sidebar-border h-10 flex items-center justify-center gap-2 text-[11px] text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition"
+        className="hidden md:flex border-t border-sidebar-border h-10 items-center justify-center gap-2 text-[11px] text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition"
         title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
       >
         {collapsed ? (
@@ -205,6 +240,7 @@ export function Sidebar() {
           </>
         )}
       </button>
-    </aside>
+      </aside>
+    </>
   );
 }

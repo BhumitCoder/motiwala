@@ -12,11 +12,13 @@ import {
 } from "@/repositories";
 import type { Item } from "@/types";
 import { fmtMoney } from "@/lib/format";
+import { Boxes, Search, Wallet, AlertTriangle, type LucideIcon } from "lucide-react";
 
 export const Route = createFileRoute("/inventory")({ component: InventoryPage });
 
 function InventoryPage() {
   const [rows, setRows] = useState<Item[]>([]);
+  const [q, setQ] = useState("");
   const refresh = () => setRows(ItemRepo.all());
   useEffect(() => {
     refresh();
@@ -118,14 +120,68 @@ function InventoryPage() {
     (r) => (r.minStock != null && r.stock <= r.minStock) || r.stock < 0,
   ).length;
 
+  const filtered = rows.filter((r) => {
+    const s = q.toLowerCase();
+    return !s || r.name.toLowerCase().includes(s) || r.sku?.toLowerCase().includes(s);
+  });
+
   return (
     <div className="flex flex-col h-full">
       <PageHeader
         title="Inventory"
-        subtitle={`${rows.length} items · Stock value: ${fmtMoney(totalValue)} · Low: ${lowCount}`}
+        subtitle={`${rows.length} items`}
+        icon={<Boxes className="h-5 w-5" />}
+        actions={
+          <>
+            <InventoryCard icon={Wallet} label="Stock Value" value={fmtMoney(totalValue)} tone="primary" />
+            <InventoryCard icon={AlertTriangle} label="Low Stock" value={String(lowCount)} tone="rose" />
+            <div className="relative w-44 lg:w-56">
+              <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                autoFocus
+                placeholder="Search items by name or SKU..."
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                className="w-full h-8 pl-8 pr-3 border border-gray-200 rounded-md text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
+              />
+            </div>
+          </>
+        }
       />
       <div className="p-3 flex-1 min-h-0 flex">
-        <DataTable columns={columns} rows={rows} rowKey={(r) => r.id} />
+        <DataTable columns={columns} rows={filtered} rowKey={(r) => r.id} />
+      </div>
+    </div>
+  );
+}
+
+const INV_TONES = {
+  primary: { bg: "bg-primary-soft", text: "text-primary" },
+  rose: { bg: "bg-rose-50", text: "text-rose-600" },
+} as const;
+
+function InventoryCard({
+  icon: Icon,
+  label,
+  value,
+  tone,
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: string;
+  tone: keyof typeof INV_TONES;
+}) {
+  const t = INV_TONES[tone];
+  return (
+    <div className="shrink-0 flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border border-gray-100 bg-white">
+      <div className={`h-8 w-8 rounded-md flex items-center justify-center shrink-0 ${t.bg} ${t.text}`}>
+        <Icon className="h-4 w-4" />
+      </div>
+      <div className="min-w-0">
+        <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wide mb-0.5 whitespace-nowrap">
+          {label}
+        </p>
+        <p className={`text-[14px] font-bold tabular-nums whitespace-nowrap ${t.text}`}>{value}</p>
       </div>
     </div>
   );

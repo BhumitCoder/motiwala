@@ -13,7 +13,8 @@ import {
   CashAdjustmentRepo,
 } from "@/repositories";
 import { fmtMoney, ymd } from "@/lib/format";
-import { partyBalances, cashFlows, netFlow, computeCogs, bankFlows } from "@/lib/ledger";
+import { partyBalances, cashFlows, netFlow, computeCogs, bankFlows, type PartyBalance } from "@/lib/ledger";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   AreaChart,
   Area,
@@ -91,6 +92,7 @@ function Dashboard() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState<Period>("this_month");
   const [showPeriodMenu, setShowPeriodMenu] = useState(false);
+  const [partyListOpen, setPartyListOpen] = useState<"receivable" | "payable" | null>(null);
   const [data, setData] = useState({
     sales: [] as any[],
     purchases: [] as any[],
@@ -205,51 +207,71 @@ function Dashboard() {
   ];
 
   return (
-    <div className="flex h-full overflow-hidden bg-[#f5f6fa]">
+    <div className="flex flex-col md:flex-row h-full overflow-auto md:overflow-hidden bg-[#f5f6fa]">
       {/* Main content */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-auto">
+      <div className="flex-1 flex flex-col min-w-0 md:overflow-auto">
         {/* Receivable / Payable */}
         <div className="flex gap-0 border-b border-gray-200 bg-white">
           {/* Total Receivable */}
-          <div className="flex-1 p-5 border-r border-gray-200">
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">
+          <button
+            onClick={() => setPartyListOpen("receivable")}
+            className="flex-1 min-w-0 p-3 sm:p-5 border-r border-gray-200 text-left hover:bg-gray-50 transition"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1 truncate">
                   Total Receivable
                 </p>
-                <p className="text-[28px] font-bold text-gray-800 leading-tight">
+                <p className="text-[20px] sm:text-[28px] font-bold text-gray-800 leading-tight truncate">
                   ₹ {fmt(receivable)}
                 </p>
-                <p className="text-xs text-gray-400 mt-1">
+                <p className="text-xs text-gray-400 mt-1 truncate">
                   From {receivableParties} {receivableParties === 1 ? "Party" : "Parties"}
                 </p>
               </div>
-              <div className="h-10 w-10 rounded-full bg-emerald-50 border-2 border-emerald-200 flex items-center justify-center mt-1">
-                <ArrowDownLeft className="h-5 w-5 text-emerald-500" />
+              <div className="h-8 w-8 sm:h-10 sm:w-10 shrink-0 rounded-full bg-emerald-50 border-2 border-emerald-200 flex items-center justify-center mt-1">
+                <ArrowDownLeft className="h-4 w-4 sm:h-5 sm:w-5 text-emerald-500" />
               </div>
             </div>
-          </div>
+          </button>
 
           {/* Total Payable */}
-          <div className="flex-1 p-5">
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">
+          <button
+            onClick={() => setPartyListOpen("payable")}
+            className="flex-1 min-w-0 p-3 sm:p-5 text-left hover:bg-gray-50 transition"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1 truncate">
                   Total Payable
                 </p>
-                <p className="text-[28px] font-bold text-gray-800 leading-tight">
+                <p className="text-[20px] sm:text-[28px] font-bold text-gray-800 leading-tight truncate">
                   ₹ {fmt(payable)}
                 </p>
-                <p className="text-xs text-gray-400 mt-1">
+                <p className="text-xs text-gray-400 mt-1 truncate">
                   From {payableParties} {payableParties === 1 ? "Party" : "Parties"}
                 </p>
               </div>
-              <div className="h-10 w-10 rounded-full bg-rose-50 border-2 border-rose-200 flex items-center justify-center mt-1">
-                <ArrowUpRight className="h-5 w-5 text-rose-500" />
+              <div className="h-8 w-8 sm:h-10 sm:w-10 shrink-0 rounded-full bg-rose-50 border-2 border-rose-200 flex items-center justify-center mt-1">
+                <ArrowUpRight className="h-4 w-4 sm:h-5 sm:w-5 text-rose-500" />
               </div>
             </div>
-          </div>
+          </button>
         </div>
+
+        <PartyBalanceListDialog
+          open={partyListOpen !== null}
+          onOpenChange={(v) => !v && setPartyListOpen(null)}
+          title={partyListOpen === "receivable" ? "Total Receivable" : "Total Payable"}
+          parties={(partyListOpen === "receivable" ? customerBalances : supplierBalances)
+            .filter((b) => b.balance > 0.01)
+            .sort((a, b) => b.balance - a.balance)}
+          tone={partyListOpen === "receivable" ? "emerald" : "rose"}
+          onOpenParty={(id) => {
+            setPartyListOpen(null);
+            navigate({ to: "/parties/$id", params: { id } });
+          }}
+        />
 
         {/* Sales chart */}
         <div className="bg-white border-b border-gray-200 px-5 pt-4 pb-2">
@@ -270,7 +292,7 @@ function Dashboard() {
             <div className="relative">
               <button
                 onClick={() => setShowPeriodMenu((v) => !v)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-gray-200 text-xs font-semibold text-gray-600 bg-white hover:bg-gray-50 transition"
+                className="flex items-center gap-1.5 h-8 px-3 rounded-md border border-gray-200 text-xs font-semibold text-gray-600 bg-white hover:bg-gray-50 transition"
               >
                 {periodLabel}
                 <ChevronDown className="h-3.5 w-3.5 text-gray-400" />
@@ -378,25 +400,25 @@ function Dashboard() {
           <div className="mt-4 flex flex-wrap gap-2">
             <button
               onClick={() => navigate({ to: "/sales/new" })}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-md text-xs font-semibold hover:bg-blue-700 transition"
+              className="inline-flex items-center gap-1.5 h-8 px-3 bg-blue-600 text-white rounded-md text-xs font-semibold hover:bg-blue-700 transition"
             >
               <Plus className="h-3.5 w-3.5" /> Add Sale
             </button>
             <button
               onClick={() => navigate({ to: "/purchase/new" })}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 text-gray-700 rounded-md text-xs font-semibold hover:bg-gray-50 transition"
+              className="inline-flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 text-gray-700 rounded-md text-xs font-semibold hover:bg-gray-50 transition"
             >
               <Plus className="h-3.5 w-3.5" /> Add Purchase
             </button>
             <button
               onClick={() => navigate({ to: "/parties" })}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 text-gray-700 rounded-md text-xs font-semibold hover:bg-gray-50 transition"
+              className="inline-flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 text-gray-700 rounded-md text-xs font-semibold hover:bg-gray-50 transition"
             >
               <Users className="h-3.5 w-3.5" /> Add Party
             </button>
             <button
               onClick={() => navigate({ to: "/items" })}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 text-gray-700 rounded-md text-xs font-semibold hover:bg-gray-50 transition"
+              className="inline-flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 text-gray-700 rounded-md text-xs font-semibold hover:bg-gray-50 transition"
             >
               <Package className="h-3.5 w-3.5" /> Add Item
             </button>
@@ -426,12 +448,12 @@ function Dashboard() {
       </div>
 
       {/* Right Stats Panel */}
-      <div className="w-[240px] flex-shrink-0 bg-white border-l border-gray-200 flex flex-col overflow-auto">
+      <div className="w-full md:w-[240px] shrink-0 bg-white border-t md:border-t-0 md:border-l border-gray-200 flex flex-col md:overflow-auto">
         <StatRow label="Purchases" badge={periodLabel} value={`₹ ${fmt(totalPurchase)}`} />
         <StatRow label="Expenses" badge={periodLabel} value={`₹ ${fmt(totalExpense)}`} />
         <StatRow label="Stock Value" badge="As of Now" value={`₹ ${fmt(stockValue)}`} />
         <StatRow
-          label="Cash In Hand"
+          label="Cash On Hand"
           badge="As of Now"
           value={`₹ ${fmt(cashInHand)}`}
           valueClass={cashInHand < 0 ? "text-rose-600" : "text-gray-800"}
@@ -466,6 +488,51 @@ function Dashboard() {
         </div>
       </div>
     </div>
+  );
+}
+
+function PartyBalanceListDialog({
+  open,
+  onOpenChange,
+  title,
+  parties,
+  tone,
+  onOpenParty,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  title: string;
+  parties: PartyBalance[];
+  tone: "emerald" | "rose";
+  onOpenParty: (partyId: string) => void;
+}) {
+  const toneClass = tone === "emerald" ? "text-emerald-600" : "text-rose-600";
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md max-h-[80vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        {parties.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-6 text-center">No outstanding parties</p>
+        ) : (
+          <div className="divide-y divide-gray-100 border rounded-md overflow-hidden">
+            {parties.map((p) => (
+              <button
+                key={p.partyId}
+                onClick={() => onOpenParty(p.partyId)}
+                className="w-full flex items-center justify-between gap-3 px-3 py-2.5 text-left hover:bg-gray-50 transition"
+              >
+                <span className="font-medium text-gray-800 truncate">{p.name}</span>
+                <span className={`font-bold tabular-nums shrink-0 ${toneClass}`}>
+                  {fmtMoney(p.balance)}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
 

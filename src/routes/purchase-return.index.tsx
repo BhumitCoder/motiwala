@@ -6,6 +6,7 @@ import { fmtMoney, fmtDate } from "@/lib/format";
 import { Plus, CornerUpLeft, Trash2, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { usePagination, PaginationBar } from "@/components/Pagination";
+import { PageHeader } from "@/components/PageHeader";
 
 export const Route = createFileRoute("/purchase-return/")({ component: PurchaseReturnPage });
 
@@ -35,28 +36,22 @@ function PurchaseReturnPage() {
 
   return (
     <div className="flex flex-col h-full bg-[#f5f6fa]">
-      <div className="bg-white border-b px-5 py-3 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-md bg-primary-soft text-primary flex items-center justify-center">
-            <CornerUpLeft className="h-4 w-4" />
-          </div>
-          <div>
-            <h1 className="text-[17px] font-bold text-gray-800">Purchase Returns</h1>
-            <p className="text-[12px] text-gray-400">
-              {rows.length} debit notes · Total: {fmtMoney(totalDebit)}
-            </p>
-          </div>
-        </div>
-        <button
-          onClick={() => navigate({ to: "/purchase-return/new" })}
-          className="inline-flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-semibold hover:opacity-90 transition"
-        >
-          <Plus className="h-4 w-4" /> New Purchase Return
-        </button>
-      </div>
+      <PageHeader
+        title="Purchase Returns"
+        subtitle={`${rows.length} debit notes · Total: ${fmtMoney(totalDebit)}`}
+        icon={<CornerUpLeft className="h-5 w-5" />}
+        actions={
+          <button
+            onClick={() => navigate({ to: "/purchase-return/new" })}
+            className="inline-flex items-center gap-1.5 h-8 px-4 bg-primary text-primary-foreground rounded-md text-sm font-semibold hover:opacity-90 transition"
+          >
+            <Plus className="h-4 w-4" /> New Purchase Return
+          </button>
+        }
+      />
 
       <div className="flex-1 overflow-auto">
-        <table className="w-full text-[13px] border-collapse">
+        <table className="w-full min-w-[760px] text-[13px] border-collapse">
           <thead className="sticky top-0 bg-white border-b z-10">
             <tr>
               {[
@@ -114,7 +109,7 @@ function PurchaseReturnPage() {
                   <td className="px-4 py-3 text-center">
                     <button
                       onClick={(e) => handleDelete(e, r)}
-                      className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-rose-50 text-gray-400 hover:text-rose-500 transition"
+                      className="p-1 rounded hover:bg-rose-50 text-gray-400 hover:text-rose-500 transition"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>

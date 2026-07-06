@@ -19,6 +19,13 @@ interface WorkspaceState {
   sidebarCollapsed: boolean;
   toggleSidebar: () => void;
   setSidebarCollapsed: (v: boolean) => void;
+  /** Off-canvas drawer state on mobile — separate from `sidebarCollapsed`
+   * (the desktop icon-only mode) since the two are mutually irrelevant: a
+   * phone never shows the collapse button, and a laptop never opens a
+   * drawer. */
+  mobileNavOpen: boolean;
+  setMobileNavOpen: (v: boolean) => void;
+  toggleMobileNav: () => void;
 }
 
 const SIDEBAR_KEY = "bz.sidebarCollapsed";
@@ -66,4 +73,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
       localStorage.setItem(SIDEBAR_KEY, v ? "1" : "0");
     } catch {}
   },
+  mobileNavOpen: false,
+  setMobileNavOpen: (v) => set({ mobileNavOpen: v }),
+  toggleMobileNav: () => set({ mobileNavOpen: !get().mobileNavOpen }),
 }));

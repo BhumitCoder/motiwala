@@ -82,6 +82,7 @@ export function ThermalReceipt({
       )}
       {inv.discount > 0 && row("Discount", `-${fmtMoney(inv.discount)}`)}
       {gstOn && inv.taxAmount > 0 && row("GST", fmtMoney(inv.taxAmount))}
+      {!!inv.shippingCharge && inv.shippingCharge > 0 && row("Shipping", fmtMoney(inv.shippingCharge))}
       {!!inv.roundOff &&
         Math.abs(inv.roundOff) > 0.001 &&
         row("Round Off", `${inv.roundOff > 0 ? "+" : "−"}${fmtMoney(Math.abs(inv.roundOff))}`)}

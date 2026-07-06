@@ -18,7 +18,7 @@ const firebaseConfig = {
 };
 
 /** Named Firestore database (not the "(default)" one) */
-export const DATABASE_ID = "kinteshmobileacce";
+export const DATABASE_ID = "teligramboatiball";
 
 export const isBrowser = typeof window !== "undefined";
 

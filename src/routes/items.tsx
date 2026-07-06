@@ -3,14 +3,57 @@ import { useEffect, useRef, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable, type Column } from "@/components/DataTable";
 import { ItemRepo, StockAdjustmentRepo } from "@/repositories";
+import { newBatch, commitBatch } from "@/repositories/base";
 import type { Item } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Field } from "@/components/Field";
 import { NumField } from "@/components/NumInput";
 import { fmtMoney, today } from "@/lib/format";
-import { Plus, Search, ArrowUpDown, Pencil, History } from "lucide-react";
+import { downloadCsv, parseCsv } from "@/lib/csv";
+import {
+  Plus,
+  Search,
+  ArrowUpDown,
+  Pencil,
+  History,
+  Download,
+  Upload,
+  Package,
+} from "lucide-react";
 import { toast } from "sonner";
+
+/** Bulk import/export columns — kept in lockstep with the New/Edit Item form
+ * fields (Name, Category, Purchase/Sale/Wholesale Price, Min/Opening Stock).
+ * No SKU/Barcode/Unit/GST Rate/HSN — those aren't part of this client's
+ * item data model anywhere else in the app. */
+const BULK_COLUMNS = [
+  "Name",
+  "Category",
+  "Purchase Price",
+  "Sale Price",
+  "Wholesale Price",
+  "Min Stock",
+  "Opening Stock",
+] as const;
+
+/** Full export adds read-only Current Stock — not in BULK_COLUMNS/the import
+ * template since it's ignored on re-import (stock only changes via Opening
+ * Stock for new items, or the audited Stock Adjustment flow). */
+const EXPORT_COLUMNS = [...BULK_COLUMNS, "Current Stock"] as const;
+
+function itemToBulkRow(it: Item): string[] {
+  return [
+    it.name,
+    it.category ?? "",
+    String(it.purchasePrice ?? 0),
+    String(it.salePrice ?? 0),
+    it.wholesalePrice != null ? String(it.wholesalePrice) : "",
+    it.minStock != null ? String(it.minStock) : "",
+    String(it.openingStock ?? 0),
+    String(it.stock ?? 0),
+  ];
+}
 
 export const Route = createFileRoute("/items")({ component: ItemsPage });
 
@@ -21,6 +64,9 @@ function ItemsPage() {
   const [open, setOpen] = useState(false);
   const [edit, setEdit] = useState<Item | null>(null);
   const [adjustItem, setAdjustItem] = useState<Item | null>(null);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkEditOpen, setBulkEditOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const refresh = () => setRows(ItemRepo.all());
   useEffect(refresh, []);
 
@@ -49,7 +95,39 @@ function ItemsPage() {
     );
   });
 
+  const allFilteredSelected = filtered.length > 0 && filtered.every((r) => selectedIds.has(r.id));
+  const toggleAllFiltered = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allFilteredSelected) filtered.forEach((r) => next.delete(r.id));
+      else filtered.forEach((r) => next.add(r.id));
+      return next;
+    });
+  };
+  const toggleOne = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   const columns: Column<Item>[] = [
+    {
+      key: "sel",
+      label: "",
+      width: "32px",
+      render: (r) => (
+        <input
+          type="checkbox"
+          checked={selectedIds.has(r.id)}
+          onChange={() => toggleOne(r.id)}
+          onClick={(e) => e.stopPropagation()}
+          className="accent-primary"
+        />
+      ),
+    },
     {
       key: "name",
       label: "Name",
@@ -91,7 +169,7 @@ function ItemsPage() {
     },
     {
       key: "adjust",
-      label: "",
+      label: "Action",
       width: "110px",
       align: "center",
       render: (r) => (
@@ -137,30 +215,76 @@ function ItemsPage() {
       <PageHeader
         title="Items"
         subtitle={`${rows.length} items`}
+        icon={<Package className="h-5 w-5" />}
         actions={
-          <Button
-            size="sm"
-            onClick={() => {
-              setEdit(null);
-              setOpen(true);
-            }}
-          >
-            <Plus className="h-3.5 w-3.5" /> New Item <kbd className="text-[10px] ml-1">N</kbd>
-          </Button>
+          <>
+            <div className="relative w-44 lg:w-56">
+              <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                autoFocus
+                placeholder="Search items by name..."
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                className="w-full h-8 pl-8 pr-3 border border-gray-200 rounded-md text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
+              />
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => downloadCsv("items", [...EXPORT_COLUMNS], rows.map(itemToBulkRow))}
+              title="Export CSV"
+            >
+              <Download className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Export CSV</span>
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setBulkOpen(true)}
+              title="Bulk Import"
+            >
+              <Upload className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Bulk Import</span>
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => {
+                setEdit(null);
+                setOpen(true);
+              }}
+            >
+              <Plus className="h-3.5 w-3.5" /> New Item{" "}
+              <kbd className="hidden sm:inline text-[10px] ml-1">N</kbd>
+            </Button>
+          </>
         }
       />
-      <div className="p-3 border-b bg-card">
-        <div className="relative max-w-md">
-          <Search className="h-3.5 w-3.5 absolute left-2 top-2.5 text-muted-foreground" />
-          <input
-            autoFocus
-            placeholder="Search items by name..."
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            className="h-8 pl-7 pr-2 border rounded w-full bg-background focus:border-primary outline-none"
-          />
+      {(filtered.length > 0 || selectedIds.size > 0) && (
+        <div className="px-5 py-2 border-b bg-white flex items-center gap-3 flex-wrap">
+          {filtered.length > 0 && (
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={allFilteredSelected}
+                onChange={toggleAllFiltered}
+                className="accent-primary"
+              />
+              Select all
+            </label>
+          )}
+          {selectedIds.size > 0 && (
+            <div className="flex items-center gap-2 ml-auto">
+              <span className="text-xs font-medium text-muted-foreground">
+                {selectedIds.size} selected
+              </span>
+              <Button size="sm" variant="outline" onClick={() => setBulkEditOpen(true)}>
+                <Pencil className="h-3.5 w-3.5" /> Bulk Edit
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>
+                Clear
+              </Button>
+            </div>
+          )}
         </div>
-      </div>
+      )}
       <div className="p-3 flex-1 min-h-0 flex">
         <DataTable
           columns={columns}
@@ -177,6 +301,16 @@ function ItemsPage() {
         />
       </div>
       <ItemDialog open={open} onOpenChange={setOpen} item={edit} onSaved={refresh} />
+      <BulkImportDialog open={bulkOpen} onOpenChange={setBulkOpen} onSaved={refresh} />
+      <BulkEditDialog
+        open={bulkEditOpen}
+        itemIds={Array.from(selectedIds)}
+        onOpenChange={setBulkEditOpen}
+        onSaved={() => {
+          refresh();
+          setSelectedIds(new Set());
+        }}
+      />
       <StockAdjustDialog
         item={adjustItem}
         onOpenChange={(v) => {
@@ -270,7 +404,7 @@ export function StockAdjustDialog({
               − Reduce Stock
             </button>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field
               label={`Quantity (${item.unit}) *`}
               type="number"
@@ -312,6 +446,178 @@ export function StockAdjustDialog({
             </Button>
           </div>
         </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+type BulkField = "category" | "salePrice" | "purchasePrice" | "wholesalePrice" | "minStock";
+type BulkAction = "set" | "increasePct" | "decreasePct" | "increaseAmt" | "decreaseAmt";
+
+const BULK_FIELDS: { key: BulkField; label: string; numeric: boolean }[] = [
+  { key: "category", label: "Category", numeric: false },
+  { key: "salePrice", label: "Sale Price", numeric: true },
+  { key: "purchasePrice", label: "Purchase Price", numeric: true },
+  { key: "wholesalePrice", label: "Wholesale Price", numeric: true },
+  { key: "minStock", label: "Min Stock", numeric: true },
+];
+
+/** In-app multi-select bulk edit — separate from Bulk Import/CSV. Lets the
+ * shop pick items on the list (checkboxes) and change one field across all
+ * of them at once (set a value, or bump prices by % / amount) without
+ * leaving the app. Never touches stock — same rule as Bulk Import. */
+function BulkEditDialog({
+  open,
+  itemIds,
+  onOpenChange,
+  onSaved,
+}: {
+  open: boolean;
+  itemIds: string[];
+  onOpenChange: (v: boolean) => void;
+  onSaved: () => void;
+}) {
+  const [field, setField] = useState<BulkField>("category");
+  const [action, setAction] = useState<BulkAction>("set");
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setField("category");
+      setAction("set");
+      setValue("");
+      setSaving(false);
+    }
+  }, [open]);
+
+  const fieldDef = BULK_FIELDS.find((f) => f.key === field)!;
+
+  const apply = async () => {
+    if (saving) return;
+    const items = itemIds.map((id) => ItemRepo.get(id)).filter((x): x is Item => !!x);
+    if (!items.length) {
+      toast.error("Selected items no longer exist");
+      onOpenChange(false);
+      return;
+    }
+    const n = parseFloat(value);
+    if (fieldDef.numeric) {
+      if (isNaN(n) || n < 0) {
+        toast.error("Enter a valid, non-negative number");
+        return;
+      }
+    } else if (!value.trim()) {
+      toast.error("Enter a value");
+      return;
+    }
+
+    setSaving(true);
+    const batch = newBatch();
+    for (const it of items) {
+      if (field === "category") {
+        ItemRepo.updateBatched(batch, it.id, { category: value.trim() });
+        continue;
+      }
+      const current = it[field] ?? 0;
+      let next = current;
+      if (action === "set") next = n;
+      else if (action === "increasePct") next = current * (1 + n / 100);
+      else if (action === "decreasePct") next = current * (1 - n / 100);
+      else if (action === "increaseAmt") next = current + n;
+      else if (action === "decreaseAmt") next = current - n;
+      next = Math.max(0, Math.round(next * 100) / 100);
+
+      const patch: Partial<Item> = {};
+      if (field === "salePrice") patch.salePrice = next;
+      else if (field === "purchasePrice") patch.purchasePrice = next;
+      else if (field === "wholesalePrice") patch.wholesalePrice = next;
+      else if (field === "minStock") patch.minStock = next;
+      ItemRepo.updateBatched(batch, it.id, patch);
+    }
+    await commitBatch(batch, "bulk edit items");
+    toast.success(`Updated ${items.length} item${items.length > 1 ? "s" : ""}`);
+    setSaving(false);
+    onSaved();
+    onOpenChange(false);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>
+            Bulk Edit — {itemIds.length} item{itemIds.length > 1 ? "s" : ""}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs font-medium text-muted-foreground">Field</label>
+            <select
+              value={field}
+              onChange={(e) => {
+                const f = e.target.value as BulkField;
+                setField(f);
+                if (!BULK_FIELDS.find((x) => x.key === f)?.numeric) setAction("set");
+              }}
+              className="mt-1 h-9 w-full border rounded-md px-2 text-sm bg-background"
+            >
+              {BULK_FIELDS.map((f) => (
+                <option key={f.key} value={f.key}>
+                  {f.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          {fieldDef.numeric && (
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Action</label>
+              <select
+                value={action}
+                onChange={(e) => setAction(e.target.value as BulkAction)}
+                className="mt-1 h-9 w-full border rounded-md px-2 text-sm bg-background"
+              >
+                <option value="set">Set to</option>
+                <option value="increasePct">Increase by %</option>
+                <option value="decreasePct">Decrease by %</option>
+                <option value="increaseAmt">Increase by amount</option>
+                <option value="decreaseAmt">Decrease by amount</option>
+              </select>
+            </div>
+          )}
+          <Field
+            label={
+              !fieldDef.numeric
+                ? "New category"
+                : action === "set"
+                  ? "New value"
+                  : action.includes("Pct")
+                    ? "Percent (%)"
+                    : "Amount"
+            }
+            type={fieldDef.numeric ? "number" : "text"}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">
+            This will update {fieldDef.label.toLowerCase()} on all {itemIds.length} selected item
+            {itemIds.length > 1 ? "s" : ""}.{" "}
+            {fieldDef.numeric && "Stock is never changed by bulk edit."}
+          </p>
+          <div className="flex justify-end gap-2 pt-1">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={saving}
+              onClick={() => onOpenChange(false)}
+            >
+              Cancel
+            </Button>
+            <Button type="button" disabled={saving} onClick={apply}>
+              {saving ? "Applying…" : "Apply"}
+            </Button>
+          </div>
+        </div>
       </DialogContent>
     </Dialog>
   );
@@ -404,7 +710,7 @@ export function ItemDialog({
         <DialogHeader>
           <DialogTitle>{item ? "Edit Item" : "New Item"}</DialogTitle>
         </DialogHeader>
-        <form onSubmit={save} className="grid grid-cols-3 gap-3">
+        <form onSubmit={save} className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="col-span-2">
             <Field
               ref={firstRef}
@@ -464,6 +770,317 @@ export function ItemDialog({
             </Button>
           </div>
         </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+interface PreviewRow {
+  rowNum: number;
+  name: string;
+  category?: string;
+  purchasePrice: number;
+  salePrice: number;
+  wholesalePrice?: number;
+  minStock?: number;
+  openingStock: number;
+  status: "new" | "update" | "error";
+  matchId?: string;
+  error?: string;
+}
+
+const HEADER_ALIASES: Record<string, string[]> = {
+  name: ["name", "itemname"],
+  category: ["category"],
+  purchasePrice: ["purchaseprice", "purchase"],
+  salePrice: ["saleprice", "sale", "price"],
+  wholesalePrice: ["wholesaleprice", "wholesale"],
+  minStock: ["minstock", "min"],
+  openingStock: ["openingstock", "opening", "stock"],
+};
+
+function normalizeHeader(h: string): string {
+  return h.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** Parse a bulk-import CSV into preview rows, matching each against existing
+ * items by Name (same rule the New/Edit Item form already uses to block
+ * duplicates), and flagging errors / in-file duplicates. */
+function buildPreview(text: string, existing: Item[]): PreviewRow[] {
+  const table = parseCsv(text);
+  if (table.length < 2) return [];
+
+  const header = table[0].map(normalizeHeader);
+  const colIndex: Partial<Record<string, number>> = {};
+  for (const [key, aliases] of Object.entries(HEADER_ALIASES)) {
+    const idx = header.findIndex((h) => aliases.includes(h));
+    if (idx >= 0) colIndex[key] = idx;
+  }
+  const cell = (row: string[], key: string) => {
+    const idx = colIndex[key];
+    return idx != null ? (row[idx] ?? "").trim() : "";
+  };
+  const num = (s: string, fallback = 0) => {
+    if (!s) return fallback;
+    const n = parseFloat(s.replace(/,/g, ""));
+    return isNaN(n) ? fallback : n;
+  };
+
+  const seenNew = new Map<string, number>(); // lower-case name -> rowNum
+  const out: PreviewRow[] = [];
+
+  for (let i = 1; i < table.length; i++) {
+    const row = table[i];
+    if (row.every((c) => !c.trim())) continue;
+    const rowNum = i + 1; // 1-based, counting the header row
+    const name = cell(row, "name");
+    const wholesaleRaw = cell(row, "wholesalePrice");
+    const minStockRaw = cell(row, "minStock");
+
+    const rec: PreviewRow = {
+      rowNum,
+      name,
+      category: cell(row, "category") || undefined,
+      purchasePrice: num(cell(row, "purchasePrice"), 0),
+      salePrice: num(cell(row, "salePrice"), 0),
+      wholesalePrice: wholesaleRaw ? num(wholesaleRaw) : undefined,
+      minStock: minStockRaw !== "" ? num(minStockRaw) : undefined,
+      openingStock: num(cell(row, "openingStock"), 0),
+      status: "new",
+    };
+
+    if (!name) {
+      out.push({ ...rec, status: "error", error: "Name is required" });
+      continue;
+    }
+    if (rec.purchasePrice < 0 || rec.salePrice < 0 || (rec.wholesalePrice ?? 0) < 0) {
+      out.push({ ...rec, status: "error", error: "Prices cannot be negative" });
+      continue;
+    }
+
+    const match = existing.find((it) => it.name.trim().toLowerCase() === name.toLowerCase());
+
+    if (match) {
+      rec.status = "update";
+      rec.matchId = match.id;
+    } else {
+      const dupKey = name.toLowerCase();
+      const dupRow = seenNew.get(dupKey);
+      if (dupRow) {
+        out.push({ ...rec, status: "error", error: `Duplicate of row ${dupRow} in this file` });
+        continue;
+      }
+      seenNew.set(dupKey, rowNum);
+      rec.status = "new";
+    }
+    out.push(rec);
+  }
+  return out;
+}
+
+function BulkImportDialog({
+  open,
+  onOpenChange,
+  onSaved,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  onSaved: () => void;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [rows, setRows] = useState<PreviewRow[]>([]);
+  const [fileName, setFileName] = useState("");
+  const [importing, setImporting] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setRows([]);
+      setFileName("");
+      setImporting(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }, [open]);
+
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    // Decode by BOM — Excel's "Unicode Text" export is UTF-16, which read
+    // as UTF-8 turns into garbage and every row silently errors
+    const buf = await file.arrayBuffer();
+    const b = new Uint8Array(buf);
+    const text =
+      b[0] === 0xff && b[1] === 0xfe
+        ? new TextDecoder("utf-16le").decode(buf)
+        : b[0] === 0xfe && b[1] === 0xff
+          ? new TextDecoder("utf-16be").decode(buf)
+          : new TextDecoder("utf-8").decode(buf);
+    const table = parseCsv(text);
+    if (!table.length) {
+      toast.error("File looks empty or unreadable — export it as CSV and try again");
+      setRows([]);
+      return;
+    }
+    const header = table[0].map(normalizeHeader);
+    if (!HEADER_ALIASES.name.some((a) => header.includes(a))) {
+      toast.error(
+        `No "Name" column found. First row of your file: "${table[0].join(", ").slice(0, 100)}" — download the Sample CSV to see the expected format`,
+      );
+      setRows([]);
+      return;
+    }
+    setRows(buildPreview(text, ItemRepo.all()));
+  };
+
+  const newCount = rows.filter((r) => r.status === "new").length;
+  const updateCount = rows.filter((r) => r.status === "update").length;
+  const errorCount = rows.filter((r) => r.status === "error").length;
+
+  const doImport = async () => {
+    const valid = rows.filter((r) => r.status !== "error");
+    if (!valid.length || importing) return;
+    setImporting(true);
+    try {
+      for (let i = 0; i < valid.length; i += 400) {
+        const chunk = valid.slice(i, i + 400);
+        const batch = newBatch();
+        for (const r of chunk) {
+          if (r.status === "update" && r.matchId) {
+            // Descriptive/pricing fields only — bulk update never touches
+            // stock, which stays governed by the audited adjustment flow.
+            ItemRepo.updateBatched(batch, r.matchId, {
+              name: r.name,
+              category: r.category,
+              purchasePrice: r.purchasePrice,
+              salePrice: r.salePrice,
+              wholesalePrice: r.wholesalePrice,
+              minStock: r.minStock,
+            });
+          } else {
+            ItemRepo.addBatched(batch, {
+              name: r.name,
+              category: r.category,
+              unit: "pcs",
+              gstRate: 0,
+              purchasePrice: r.purchasePrice,
+              salePrice: r.salePrice,
+              wholesalePrice: r.wholesalePrice,
+              minStock: r.minStock,
+              stock: r.openingStock,
+              openingStock: r.openingStock,
+            } as Omit<Item, "id" | "createdAt">);
+          }
+        }
+        await commitBatch(batch, "bulk import");
+      }
+      toast.success(
+        `Imported: ${newCount} new, ${updateCount} updated` +
+          (errorCount ? `, ${errorCount} skipped (errors)` : ""),
+      );
+      onSaved();
+      onOpenChange(false);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-4xl">
+        <DialogHeader>
+          <DialogTitle>Bulk Import Items</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <p className="text-sm text-muted-foreground max-w-lg">
+              Matches by <b>Name</b> — matched rows update the existing item, unmatched rows
+              create a new one. Stock is only set for new items; existing items' stock is never
+              changed by bulk import.
+            </p>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => downloadCsv("items-template", [...BULK_COLUMNS], [])}
+            >
+              <Download className="h-3.5 w-3.5" /> Sample CSV
+            </Button>
+          </div>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv,text/csv,text/comma-separated-values,application/csv,application/vnd.ms-excel,text/plain"
+            onChange={onFile}
+            className="text-sm file:mr-3 file:h-8 file:px-3 file:rounded-md file:border file:bg-background file:text-sm file:font-medium file:cursor-pointer"
+          />
+          {fileName && rows.length === 0 && (
+            <p className="text-sm text-destructive">No valid rows found in {fileName}.</p>
+          )}
+          {rows.length > 0 && (
+            <>
+              <div className="flex gap-4 text-sm">
+                <span className="text-success font-medium">{newCount} new</span>
+                <span className="text-primary font-medium">{updateCount} update</span>
+                {errorCount > 0 && (
+                  <span className="text-destructive font-medium">
+                    {errorCount} error{errorCount > 1 ? "s" : ""} (skipped)
+                  </span>
+                )}
+              </div>
+              <div className="border rounded max-h-80 overflow-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted sticky top-0">
+                    <tr>
+                      <th className="text-left p-1.5">Row</th>
+                      <th className="text-left p-1.5">Name</th>
+                      <th className="text-left p-1.5">Category</th>
+                      <th className="text-right p-1.5">Sale Price</th>
+                      <th className="text-right p-1.5">Opening Stock</th>
+                      <th className="text-left p-1.5">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r) => (
+                      <tr key={r.rowNum} className="border-t">
+                        <td className="p-1.5">{r.rowNum}</td>
+                        <td className="p-1.5">{r.name || "—"}</td>
+                        <td className="p-1.5">{r.category ?? "—"}</td>
+                        <td className="p-1.5 text-right">{fmtMoney(r.salePrice)}</td>
+                        <td className="p-1.5 text-right">{r.openingStock}</td>
+                        <td className="p-1.5">
+                          {r.status === "new" && <span className="text-success font-medium">New</span>}
+                          {r.status === "update" && (
+                            <span className="text-primary font-medium">Update</span>
+                          )}
+                          {r.status === "error" && (
+                            <span className="text-destructive font-medium">{r.error}</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+          <div className="flex justify-end gap-2 pt-1">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={importing}
+              onClick={() => onOpenChange(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={importing || newCount + updateCount === 0}
+              onClick={doImport}
+            >
+              {importing ? "Importing…" : `Import ${newCount + updateCount || ""}`.trim()}
+            </Button>
+          </div>
+        </div>
       </DialogContent>
     </Dialog>
   );

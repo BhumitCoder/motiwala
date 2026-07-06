@@ -1,3 +1,3 @@
 /** Bump on every deploy — shown on the login page and Settings so we can
  * always tell which version a user is actually running. */
-export const APP_VERSION = "3 Jul 2026 · v12";
+export const APP_VERSION = "6 Jul 2026 · v16";

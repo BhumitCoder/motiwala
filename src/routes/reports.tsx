@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import {
   SalesRepo,
@@ -9,10 +9,15 @@ import {
   SaleReturnRepo,
   PurchaseReturnRepo,
   PaymentRepo,
+  CompanyRepo,
 } from "@/repositories";
 import { fmtMoney, fmtDate, today, ymd } from "@/lib/format";
 import { printWithName } from "@/lib/print";
-import { partyBalances, computeCogs } from "@/lib/ledger";
+import { computeCogs, buildPartyStatement } from "@/lib/ledger";
+import { downloadCsv } from "@/lib/csv";
+import { downloadXlsx } from "@/lib/xlsx";
+import { partyStatementSheet } from "@/lib/partySheet";
+import { PartyStatementRowBlock } from "./parties_.$id";
 import { fmtMode } from "@/components/ModePills";
 import {
   FileText,
@@ -23,27 +28,8 @@ import {
   RefreshCcw,
   Printer,
   Download,
+  Search,
 } from "lucide-react";
-
-/** Download rows as Excel-friendly CSV — money cells become plain numbers */
-function downloadCsv(name: string, cols: string[], rows: string[][]) {
-  const clean = (s: string) => {
-    const t = String(s)
-      .replace(/[\u00A0\u202F]/g, " ")
-      .trim();
-    const m = t.match(/^([+\-−]?)\s*₹\s?([\d,]+(?:\.\d+)?)$/);
-    const v = m ? `${m[1] === "−" || m[1] === "-" ? "-" : ""}${m[2].replace(/,/g, "")}` : t;
-    return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-  };
-  const csv = "\uFEFF" + [cols, ...rows].map((r) => r.map(clean).join(",")).join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${name.toLowerCase().replace(/\s+/g, "-")}-${today()}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
 
 export const Route = createFileRoute("/reports")({
   component: ReportsPage,
@@ -68,12 +54,11 @@ const REPORTS = [
   { key: "payments", label: "Payments Ledger", icon: Wallet, desc: "All payment in/out" },
   { key: "gst", label: "GST Summary", icon: BarChart3, desc: "Output vs input tax" },
   {
-    key: "customer-ledger",
-    label: "Customer Ledger",
+    key: "party-ledger",
+    label: "Party Ledger",
     icon: Users,
-    desc: "Receivable per customer",
+    desc: "Full statement per party — sales, purchases, returns & payments",
   },
-  { key: "supplier-ledger", label: "Supplier Ledger", icon: Users, desc: "Payable per supplier" },
   { key: "stock", label: "Stock Report", icon: Package, desc: "Item-wise stock & value" },
   { key: "daily", label: "Today's Summary", icon: BarChart3, desc: "Today's activity" },
 ];
@@ -89,9 +74,14 @@ function ReportsPage() {
   return (
     <div className="flex flex-col h-full bg-[#f5f6fa]">
       <div className="bg-white border-b px-5 py-3 flex items-center justify-between gap-3 no-print">
-        <div>
-          <h1 className="text-[17px] font-bold text-gray-800">Reports</h1>
-          <p className="text-[12px] text-gray-400">{current?.desc}</p>
+        <div className="flex items-center gap-3">
+          <div className="h-10 w-10 shrink-0 rounded-lg bg-primary-soft text-primary flex items-center justify-center">
+            <BarChart3 className="h-5 w-5" />
+          </div>
+          <div>
+            <h1 className="text-[17px] font-bold text-gray-800">Reports</h1>
+            <p className="text-[12px] text-gray-400">{current?.desc}</p>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <label className="text-xs font-medium text-gray-500">From</label>
@@ -114,7 +104,7 @@ function ReportsPage() {
                 `${(current?.label ?? "Report").replace(/\s+/g, "-")}-${dateFrom}-to-${dateTo}`,
               )
             }
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 rounded-md text-xs font-semibold text-gray-600 hover:bg-gray-50 transition"
+            className="inline-flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 rounded-md text-xs font-semibold text-gray-600 hover:bg-gray-50 transition"
             title="Print, or choose 'Save as PDF' in the print dialog"
           >
             <Printer className="h-3.5 w-3.5" /> Print / PDF
@@ -168,6 +158,7 @@ function ReportView({
   dateTo: string;
 }) {
   const label = REPORTS.find((r) => r.key === which)?.label ?? which;
+  const navigate = useNavigate();
 
   const sales = useMemo(
     () => SalesRepo.all().filter((s) => inRange(s.date, dateFrom, dateTo)),
@@ -195,6 +186,7 @@ function ReportView({
   );
   const parties = useMemo(() => PartyRepo.all(), []);
   const items = useMemo(() => ItemRepo.all(), []);
+  const [partySearch, setPartySearch] = useState("");
 
   if (which === "pl") {
     const revenue = sales.reduce((a, s) => a + s.total, 0);
@@ -462,67 +454,185 @@ function ReportView({
     );
   }
 
-  if (which === "customer-ledger") {
-    const rows = partyBalances(
-      SalesRepo.all(),
-      SaleReturnRepo.all(),
-      PaymentRepo.all().filter((p) => p.type === "in"),
-      parties.filter((p) => p.type !== "supplier"),
-      "customer",
-    )
-      .filter((r) => Math.abs(r.balance) > 0.01)
-      .sort((a, b) => b.balance - a.balance);
-    const totalReceivable = rows.reduce((a, r) => a + Math.max(0, r.balance), 0);
-    const totalAdvances = rows.reduce((a, r) => a + Math.max(0, -r.balance), 0);
+  if (which === "party-ledger") {
+    // Every party is both customer & supplier now — one combined statement
+    // (sales, purchases, returns, payments, running balance, and each
+    // transaction's own item breakdown) per party, instead of splitting by a
+    // customer/supplier field that no longer means anything. Always built
+    // from FULL history — dateFrom/dateTo only control the visible window
+    // inside buildPartyStatement (via a proper "Balance b/f" line), same as
+    // the per-party Statement page.
+    const data = {
+      sales: SalesRepo.all(),
+      purchases: PurchaseRepo.all(),
+      saleReturns: SaleReturnRepo.all(),
+      purchaseReturns: PurchaseReturnRepo.all(),
+      payments: PaymentRepo.all(),
+    };
+    const perPartyAll = parties
+      .map((p) => ({ party: p, ledger: buildPartyStatement(p, data, dateFrom, dateTo) }))
+      .filter(({ ledger }) => ledger.rows.length > 0)
+      .sort((a, b) => a.party.name.localeCompare(b.party.name));
+    const q = partySearch.trim().toLowerCase();
+    const perParty = q
+      ? perPartyAll.filter(({ party: p }) => p.name.toLowerCase().includes(q))
+      : perPartyAll;
 
-    return (
-      <TableReport
-        label={`Customer Ledger`}
-        totalRows={[
-          ["Total Receivable", fmtMoney(totalReceivable)],
-          ["Customer Advances", fmtMoney(totalAdvances)],
-        ]}
-        cols={["Customer", "Total Sales", "Returns", "Collected", "Balance"]}
-        rows={rows.map((r) => [
-          r.name,
-          fmtMoney(r.invoiced),
-          fmtMoney(r.returned),
-          fmtMoney(r.settled + r.advances),
-          fmtMoney(r.balance),
-        ])}
-      />
+    const closingOf = (rows: { balance: number }[]) => (rows.length ? rows[rows.length - 1].balance : 0);
+    const totalReceivable = perParty.reduce(
+      (s, { ledger }) => s + Math.max(0, closingOf(ledger.rows)),
+      0,
     );
-  }
+    const totalPayable = perParty.reduce(
+      (s, { ledger }) => s + Math.max(0, -closingOf(ledger.rows)),
+      0,
+    );
+    const fmtBal = (n: number) => `${fmtMoney(Math.abs(n))}${n > 0 ? " Dr" : n < 0 ? " Cr" : ""}`;
 
-  if (which === "supplier-ledger") {
-    const rows = partyBalances(
-      PurchaseRepo.all(),
-      PurchaseReturnRepo.all(),
-      PaymentRepo.all().filter((p) => p.type === "out"),
-      parties.filter((p) => p.type !== "customer"),
-      "supplier",
-    )
-      .filter((r) => Math.abs(r.balance) > 0.01)
-      .sort((a, b) => b.balance - a.balance);
-    const totalPayable = rows.reduce((a, r) => a + Math.max(0, r.balance), 0);
-    const totalAdvances = rows.reduce((a, r) => a + Math.max(0, -r.balance), 0);
+    if (perPartyAll.length === 0) {
+      return (
+        <div>
+          <h2 className="text-base font-bold text-gray-800 mb-3">{label}</h2>
+          <div className="bg-white border rounded-lg p-8 text-center text-gray-400">
+            <FileText className="h-8 w-8 mx-auto mb-2 text-gray-200" />
+            <p>No party activity for selected date range</p>
+          </div>
+        </div>
+      );
+    }
+
+    const company = CompanyRepo.get();
+    const periodLabel = `${dateFrom ? fmtDate(dateFrom) : "Beginning"} to ${dateTo ? fmtDate(dateTo) : "Today"}`;
+    const sheets = perParty.map(({ party: p, ledger }) =>
+      partyStatementSheet(p, ledger.rows, company, periodLabel),
+    );
+
+    const openRow = (r: { docId?: string; docKind?: string }) => {
+      if (!r.docId || !r.docKind) return;
+      if (r.docKind === "sale") navigate({ to: "/sales/$id", params: { id: r.docId } });
+      else if (r.docKind === "purchase") navigate({ to: "/purchase/$id", params: { id: r.docId } });
+      else if (r.docKind === "sale-return")
+        navigate({ to: "/sale-return/$id", params: { id: r.docId } });
+      else navigate({ to: "/purchase-return/$id", params: { id: r.docId } });
+    };
 
     return (
-      <TableReport
-        label={`Supplier Ledger`}
-        totalRows={[
-          ["Total Payable", fmtMoney(totalPayable)],
-          ["Advances to Suppliers", fmtMoney(totalAdvances)],
-        ]}
-        cols={["Supplier", "Total Purchase", "Returns", "Paid", "Balance"]}
-        rows={rows.map((r) => [
-          r.name,
-          fmtMoney(r.invoiced),
-          fmtMoney(r.returned),
-          fmtMoney(r.settled + r.advances),
-          fmtMoney(r.balance),
-        ])}
-      />
+      <div>
+        {/* Each party's table is 9 columns wide plus a nested item
+            breakdown — too wide for portrait A4, so it gets cut off at the
+            right edge when printed. Landscape gives it room to fit. */}
+        <style>{`@media print { @page { size: A4 landscape; margin: 12mm; } }`}</style>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-base font-bold text-gray-800">{label}</h2>
+          <button
+            onClick={() => downloadXlsx("Party Ledger", sheets)}
+            className="no-print inline-flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 rounded-md text-xs font-semibold text-gray-600 hover:bg-gray-50 transition"
+          >
+            <Download className="h-3.5 w-3.5" /> Export Excel (one sheet per party)
+          </button>
+        </div>
+        <div className="mb-4 flex flex-wrap items-center gap-x-8 gap-y-2 bg-white border rounded-lg px-5 py-3">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-gray-500">Total Receivable:</span>
+            <span className="text-sm font-bold text-rose-600 tabular-nums">
+              {fmtMoney(totalReceivable)}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-gray-500">Total Payable:</span>
+            <span className="text-sm font-bold text-amber-600 tabular-nums">
+              {fmtMoney(totalPayable)}
+            </span>
+          </div>
+          <div className="no-print flex items-center gap-1.5 border border-gray-200 rounded-md px-2.5 py-1.5 bg-white flex-1 max-w-xs ml-auto">
+            <Search className="h-3.5 w-3.5 text-gray-400" />
+            <input
+              value={partySearch}
+              onChange={(e) => setPartySearch(e.target.value)}
+              placeholder="Search party…"
+              className="text-xs flex-1 outline-none placeholder-gray-400 bg-transparent"
+            />
+          </div>
+        </div>
+        {perParty.length === 0 && (
+          <div className="bg-white border rounded-lg p-8 text-center text-gray-400 mb-4">
+            <Search className="h-8 w-8 mx-auto mb-2 text-gray-200" />
+            <p>No party matches "{partySearch}"</p>
+          </div>
+        )}
+        <div className="space-y-4">
+          {perParty.map(({ party: p, ledger }) => {
+            const closing = closingOf(ledger.rows);
+            return (
+              <div
+                key={p.id}
+                className="bg-white border rounded-lg shadow-sm overflow-hidden"
+                style={{ breakInside: "avoid" }}
+              >
+                <div className="px-4 py-2.5 bg-gray-50 border-b flex items-center justify-between gap-3">
+                  <button
+                    onClick={() => navigate({ to: "/parties/$id", params: { id: p.id } })}
+                    className="no-print font-bold text-sm text-gray-800 hover:text-primary hover:underline text-left"
+                    title="Open full party statement"
+                  >
+                    {p.name}
+                  </button>
+                  <span className="hidden print:inline font-bold text-sm text-gray-800">
+                    {p.name}
+                  </span>
+                  <span
+                    className={`text-xs font-bold tabular-nums ${closing > 0 ? "text-rose-600" : closing < 0 ? "text-amber-600" : "text-gray-500"}`}
+                  >
+                    Closing: {fmtBal(closing)}
+                  </span>
+                </div>
+                <table className="w-full text-[12px] border-collapse">
+                  <thead>
+                    <tr className="bg-gray-50/60">
+                      {[
+                        "Date",
+                        "Txn Type",
+                        "Ref No.",
+                        "Payment Status",
+                        "Total",
+                        "Received/Paid",
+                        "Txn Balance",
+                        "Receivable Balance",
+                        "Payable Balance",
+                      ].map((h, i) => (
+                        <th
+                          key={h}
+                          className={`px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-gray-500 border-b border-gray-100 whitespace-nowrap ${i >= 4 ? "text-right" : "text-left"}`}
+                        >
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ledger.rows.map((r, i) => (
+                      <PartyStatementRowBlock key={i} row={r} onOpen={() => openRow(r)} />
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="bg-gray-50 border-t-2 border-gray-200 font-bold">
+                      <td colSpan={7} className="px-3 py-2.5 text-[10px] uppercase text-gray-500">
+                        Closing Balance
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-rose-600">
+                        {closing > 0 ? fmtMoney(closing) : "—"}
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-amber-600">
+                        {closing < 0 ? fmtMoney(-closing) : "—"}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     );
   }
 
@@ -597,7 +707,7 @@ function ReportView({
             </span>
           </div>
         </div>
-        <div className="mt-4 grid grid-cols-3 gap-3">
+        <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
           <StatCard
             label="Invoices"
             value={todaySales.length}
@@ -716,7 +826,7 @@ function TableReport({
           <h2 className="text-base font-bold text-gray-800">{label}</h2>
           <button
             onClick={() => downloadCsv(label, cols, rows)}
-            className="no-print inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 rounded-md text-xs font-semibold text-gray-600 hover:bg-gray-50 transition"
+            className="no-print inline-flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 rounded-md text-xs font-semibold text-gray-600 hover:bg-gray-50 transition"
           >
             <Download className="h-3.5 w-3.5" /> Export CSV
           </button>

@@ -27,6 +27,8 @@ interface HistoryRow {
   qtyIn: number;
   qtyOut: number;
   rate: number | null;
+  docId?: string;
+  docKind?: "sale" | "purchase" | "sale-return" | "purchase-return";
 }
 
 function ItemDetailPage() {
@@ -52,6 +54,7 @@ function ItemDetailPage() {
     const collect = (
       docs: (Invoice | Return)[],
       type: string,
+      docKind: HistoryRow["docKind"],
       inward: boolean,
       onQty?: (l: { qty: number; price: number; discountPct: number; costPrice?: number }) => void,
     ) => {
@@ -67,24 +70,26 @@ function ItemDetailPage() {
             qtyIn: inward ? l.qty : 0,
             qtyOut: inward ? 0 : l.qty,
             rate: l.price,
+            docId: d.id,
+            docKind,
           });
           onQty?.(l);
         }
       }
     };
 
-    collect(SalesRepo.all(), "Sale", false, (l) => {
+    collect(SalesRepo.all(), "Sale", "sale", false, (l) => {
       soldQty = r2(soldQty + l.qty);
       profit = r2(profit + l.qty * l.price * (1 - l.discountPct / 100) - l.qty * costOf(l));
     });
-    collect(PurchaseRepo.all(), "Purchase", true, (l) => {
+    collect(PurchaseRepo.all(), "Purchase", "purchase", true, (l) => {
       boughtQty = r2(boughtQty + l.qty);
     });
-    collect(SaleReturnRepo.all(), "Sale Return", true, (l) => {
+    collect(SaleReturnRepo.all(), "Sale Return", "sale-return", true, (l) => {
       soldQty = r2(soldQty - l.qty);
       profit = r2(profit - (l.qty * l.price * (1 - l.discountPct / 100) - l.qty * costOf(l)));
     });
-    collect(PurchaseReturnRepo.all(), "Purchase Return", false, (l) => {
+    collect(PurchaseReturnRepo.all(), "Purchase Return", "purchase-return", false, (l) => {
       boughtQty = r2(boughtQty - l.qty);
     });
     for (const a of StockAdjustmentRepo.all()) {
@@ -107,6 +112,15 @@ function ItemDetailPage() {
   }, [item, id, refreshKey]);
 
   const pg = usePagination(rows);
+
+  const openRow = (e: HistoryRow) => {
+    if (!e.docId || !e.docKind) return;
+    if (e.docKind === "sale") navigate({ to: "/sales/$id", params: { id: e.docId } });
+    else if (e.docKind === "purchase") navigate({ to: "/purchase/$id", params: { id: e.docId } });
+    else if (e.docKind === "sale-return")
+      navigate({ to: "/sale-return/$id", params: { id: e.docId } });
+    else navigate({ to: "/purchase-return/$id", params: { id: e.docId } });
+  };
 
   if (item === undefined) return null;
   if (item === null) {
@@ -131,7 +145,7 @@ function ItemDetailPage() {
         <div className="flex items-center gap-3 min-w-0">
           <button
             onClick={() => navigate({ to: "/items" })}
-            className="h-9 w-9 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 hover:border-gray-300 flex items-center justify-center text-gray-600 transition shadow-sm"
+            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 hover:border-gray-300 flex items-center justify-center text-gray-600 transition shadow-sm"
             title="Back to Items"
           >
             <ArrowLeft className="h-4 w-4" />
@@ -151,13 +165,13 @@ function ItemDetailPage() {
         <div className="flex items-center gap-2">
           <button
             onClick={() => setAdjustOpen(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 bg-white border border-gray-200 text-gray-700 rounded-md text-sm font-semibold hover:bg-gray-50 transition"
+            className="inline-flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 text-gray-700 rounded-md text-sm font-semibold hover:bg-gray-50 transition"
           >
             <ArrowUpDown className="h-4 w-4" /> Adjust Stock
           </button>
           <button
             onClick={() => setEditOpen(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 bg-primary text-white rounded-md text-sm font-semibold hover:opacity-90 transition"
+            className="inline-flex items-center gap-1.5 h-8 px-3 bg-primary text-white rounded-md text-sm font-semibold hover:opacity-90 transition"
           >
             <Pencil className="h-4 w-4" /> Edit Item
           </button>
@@ -215,7 +229,12 @@ function ItemDetailPage() {
                 </tr>
               ) : (
                 pg.paged.map((e, i) => (
-                  <tr key={i} className="border-b border-gray-100 hover:bg-gray-50/60">
+                  <tr
+                    key={i}
+                    onClick={() => openRow(e)}
+                    title={e.docId ? "Open this bill" : undefined}
+                    className={`border-b border-gray-100 hover:bg-gray-50/60 ${e.docId ? "cursor-pointer" : ""}`}
+                  >
                     <td className="px-4 py-2.5 text-gray-600 whitespace-nowrap">
                       {fmtDate(e.date)}
                     </td>

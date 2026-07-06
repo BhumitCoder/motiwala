@@ -1,8 +1,18 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { PaymentRepo, PartyRepo, SalesRepo, PurchaseRepo } from "@/repositories";
-import type { Payment, PaymentAllocation, PaymentMode, Invoice } from "@/types";
+import {
+  PaymentRepo,
+  PartyRepo,
+  SalesRepo,
+  PurchaseRepo,
+  SaleReturnRepo,
+  PurchaseReturnRepo,
+  BankRepo,
+} from "@/repositories";
+import { newBatch, commitBatch } from "@/repositories/base";
+import type { Payment, PaymentAllocation, PaymentMode, Invoice, BankAccount } from "@/types";
 import { fmtMoney, fmtDate, today } from "@/lib/format";
+import { partyBalances } from "@/lib/ledger";
 import {
   ArrowDownCircle,
   ArrowUpCircle,
@@ -16,13 +26,17 @@ import {
   ChevronRight,
   Loader2,
   Pencil,
+  TrendingUp,
+  TrendingDown,
+  type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { genId } from "@/repositories/base";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { usePagination, PaginationBar } from "@/components/Pagination";
+import { DataTable, type Column } from "@/components/DataTable";
 import { ModePills, fmtMode } from "@/components/ModePills";
+import { PageHeader } from "@/components/PageHeader";
 
 export const Route = createFileRoute("/payments")({ component: PaymentsPage });
 
@@ -53,7 +67,6 @@ function PaymentsPage() {
   const totalIn = rows.filter((r) => r.type === "in").reduce((s, r) => s + r.amount, 0);
   const totalOut = rows.filter((r) => r.type === "out").reduce((s, r) => s + r.amount, 0);
   const net = totalIn - totalOut;
-  const pg = usePagination(filtered);
 
   const openForm = (type: "in" | "out") => {
     setFormType(type);
@@ -69,9 +82,12 @@ function PaymentsPage() {
     if (!confirm("Delete this payment record? Amounts applied to invoices/bills will be reversed."))
       return;
     const repo = r.type === "in" ? SalesRepo : PurchaseRepo;
+    // Invoice-paid reversal, bank-balance reversal, and the payment removal
+    // itself must all land together — a shared batch commits them atomically.
+    const batch = newBatch();
     if (r.allocations?.length) {
       for (const a of r.allocations) {
-        if (repo.get(a.invoiceId)) repo.adjustField(a.invoiceId, "paid", -a.amount);
+        if (repo.get(a.invoiceId)) repo.adjustFieldBatched(batch, a.invoiceId, "paid", -a.amount);
       }
     } else if (r.ref) {
       // Legacy payment (predates per-invoice allocations): only a lump amount
@@ -95,69 +111,160 @@ function PaymentsPage() {
       if (totalReverse > 0) {
         for (const inv of invoices) {
           const take = Math.min(inv.paid, r2((inv.paid / totalPaid) * totalReverse));
-          if (take > 0) repo.update(inv.id, { paid: r2(inv.paid - take) });
+          if (take > 0) repo.updateBatched(batch, inv.id, { paid: r2(inv.paid - take) });
         }
       }
     }
-    PaymentRepo.remove(r.id);
+    // Money that was moved onto a specific bank account when this payment
+    // was recorded must be moved back off it, or the account balance stays
+    // permanently wrong after the payment is deleted.
+    if (r.mode === "bank" && r.bankId && BankRepo.get(r.bankId)) {
+      BankRepo.adjustFieldBatched(batch, r.bankId, "balance", r.type === "in" ? -r.amount : r.amount);
+    }
+    PaymentRepo.removeBatched(batch, r.id);
+    commitBatch(batch, "delete payment");
     refresh();
     toast.success("Payment deleted");
   };
 
+  const columns: Column<Payment>[] = [
+    {
+      key: "date",
+      label: "Date",
+      width: "100px",
+      render: (r) => <span className="whitespace-nowrap">{fmtDate(r.date)}</span>,
+      sortValue: (r) => r.date,
+    },
+    {
+      key: "type",
+      label: "Type",
+      width: "120px",
+      render: (r) =>
+        r.type === "in" ? (
+          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+            <ArrowDownCircle className="h-3 w-3" /> Received
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-full border border-rose-200">
+            <ArrowUpCircle className="h-3 w-3" /> Paid Out
+          </span>
+        ),
+      sortValue: (r) => r.type,
+    },
+    {
+      key: "party",
+      label: "Party",
+      render: (r) => <span className="font-medium text-gray-800">{r.partyName}</span>,
+      sortValue: (r) => r.partyName,
+    },
+    {
+      key: "linked",
+      label: "Linked Invoice / Bill",
+      render: (r) => (
+        <span className="font-mono text-xs text-blue-600">
+          {r.allocations?.length ? (
+            r.allocations.map((a) => a.number).join(", ")
+          ) : r.ref && r.ref.match(/^(INV|PUR)-/) ? (
+            r.ref
+          ) : (
+            <span className="text-gray-400">—</span>
+          )}
+        </span>
+      ),
+    },
+    {
+      key: "mode",
+      label: "Mode",
+      width: "90px",
+      render: (r) => <span className="text-gray-500 text-xs">{fmtMode(r.mode)}</span>,
+    },
+    {
+      key: "ref",
+      label: "Reference",
+      render: (r) => (
+        <span className="font-mono text-xs text-gray-400">
+          {r.ref && (r.allocations?.length || !r.ref.match(/^(INV|PUR)-/)) ? r.ref : "—"}
+        </span>
+      ),
+    },
+    {
+      key: "amount",
+      label: "Amount",
+      width: "120px",
+      align: "right",
+      render: (r) => (
+        <span
+          className={`font-bold tabular-nums ${r.type === "in" ? "text-emerald-600" : "text-rose-600"}`}
+        >
+          {r.type === "out" ? "−" : "+"}
+          {fmtMoney(r.amount)}
+        </span>
+      ),
+      sortValue: (r) => (r.type === "in" ? r.amount : -r.amount),
+    },
+    {
+      key: "actions",
+      label: "Action",
+      width: "70px",
+      align: "center",
+      render: (r) => (
+        <span className="inline-flex gap-1">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              openEdit(r);
+            }}
+            className="p-1 rounded hover:bg-blue-50 text-gray-400 hover:text-blue-600 transition"
+            title="Edit payment"
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              handleDelete(r);
+            }}
+            className="p-1 rounded hover:bg-rose-50 text-gray-400 hover:text-rose-500 transition"
+            title="Delete payment"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </span>
+      ),
+    },
+  ];
+
   return (
     <div className="flex flex-col h-full bg-[#f5f6fa]">
-      {/* Header */}
-      <div className="bg-white border-b px-5 py-3 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-md bg-primary-soft text-primary flex items-center justify-center">
-            <Wallet className="h-4 w-4" />
-          </div>
-          <div>
-            <h1 className="text-[17px] font-bold text-gray-800">Payments</h1>
-            <p className="text-[12px] text-gray-400">{rows.length} records</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => openForm("in")}
-            className="inline-flex items-center gap-1.5 px-3 py-2 bg-emerald-600 text-white rounded-md text-sm font-semibold hover:bg-emerald-700 transition"
-          >
-            <ArrowDownCircle className="h-4 w-4" /> Receive Payment
-          </button>
-          <button
-            onClick={() => openForm("out")}
-            className="inline-flex items-center gap-1.5 px-3 py-2 bg-rose-600 text-white rounded-md text-sm font-semibold hover:bg-rose-700 transition"
-          >
-            <ArrowUpCircle className="h-4 w-4" /> Make Payment
-          </button>
-        </div>
-      </div>
-
-      {/* Summary */}
-      <div className="grid grid-cols-3 gap-0 bg-white border-b">
-        <div className="px-5 py-3.5 border-r border-gray-100">
-          <p className="text-[11px] text-gray-400 font-medium uppercase tracking-wide mb-1">
-            Total Received
-          </p>
-          <p className="text-[20px] font-bold tabular-nums text-emerald-600">{fmtMoney(totalIn)}</p>
-        </div>
-        <div className="px-5 py-3.5 border-r border-gray-100">
-          <p className="text-[11px] text-gray-400 font-medium uppercase tracking-wide mb-1">
-            Total Paid Out
-          </p>
-          <p className="text-[20px] font-bold tabular-nums text-rose-600">{fmtMoney(totalOut)}</p>
-        </div>
-        <div className="px-5 py-3.5">
-          <p className="text-[11px] text-gray-400 font-medium uppercase tracking-wide mb-1">
-            Net Cash Flow
-          </p>
-          <p
-            className={`text-[20px] font-bold tabular-nums ${net >= 0 ? "text-emerald-600" : "text-rose-600"}`}
-          >
-            {fmtMoney(net)}
-          </p>
-        </div>
-      </div>
+      <PageHeader
+        title="Payments"
+        subtitle={`${rows.length} records`}
+        icon={<Wallet className="h-5 w-5" />}
+        actions={
+          <>
+            <PaymentCard icon={ArrowDownCircle} label="Total Received" value={totalIn} tone="emerald" />
+            <PaymentCard icon={ArrowUpCircle} label="Total Paid Out" value={totalOut} tone="rose" />
+            <PaymentCard
+              icon={net >= 0 ? TrendingUp : TrendingDown}
+              label="Net Cash Flow"
+              value={net}
+              tone={net >= 0 ? "emerald" : "rose"}
+            />
+            <button
+              onClick={() => openForm("in")}
+              className="inline-flex items-center gap-1.5 h-8 px-3 bg-emerald-600 text-white rounded-md text-sm font-semibold hover:bg-emerald-700 transition"
+            >
+              <ArrowDownCircle className="h-4 w-4" /> Receive Payment
+            </button>
+            <button
+              onClick={() => openForm("out")}
+              className="inline-flex items-center gap-1.5 h-8 px-3 bg-rose-600 text-white rounded-md text-sm font-semibold hover:bg-rose-700 transition"
+            >
+              <ArrowUpCircle className="h-4 w-4" /> Make Payment
+            </button>
+          </>
+        }
+      />
 
       {/* Tabs + Search */}
       <div className="bg-white border-b px-5 py-2 flex items-center gap-4">
@@ -196,124 +303,16 @@ function PaymentsPage() {
         </div>
       </div>
 
-      {/* Table */}
-      <div className="flex-1 overflow-auto">
-        <table className="w-full text-[13px] border-collapse">
-          <thead className="sticky top-0 bg-white border-b z-10">
-            <tr>
-              {[
-                "Date",
-                "Type",
-                "Party",
-                "Linked Invoice / Bill",
-                "Mode",
-                "Reference",
-                "Amount",
-                "",
-              ].map((h) => (
-                <th
-                  key={h}
-                  className={`px-4 py-2.5 text-[11px] font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-100 whitespace-nowrap bg-white ${h === "Amount" ? "text-right" : "text-left"}`}
-                >
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.length === 0 ? (
-              <tr>
-                <td colSpan={8} className="text-center py-20 text-gray-400">
-                  <Wallet className="h-10 w-10 mx-auto mb-3 text-gray-200" />
-                  <p className="font-medium">No payments recorded</p>
-                  <p className="text-xs mt-1">Use the buttons above to record a payment</p>
-                </td>
-              </tr>
-            ) : (
-              pg.paged.map((r) => (
-                <tr
-                  key={r.id}
-                  className="border-b border-gray-100 hover:bg-gray-50/60 transition-colors group"
-                >
-                  <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{fmtDate(r.date)}</td>
-                  <td className="px-4 py-3">
-                    {r.type === "in" ? (
-                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                        <ArrowDownCircle className="h-3 w-3" /> Received
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-full border border-rose-200">
-                        <ArrowUpCircle className="h-3 w-3" /> Paid Out
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 font-medium text-gray-800 max-w-[150px] truncate">
-                    {r.partyName}
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-blue-600">
-                    {r.allocations?.length ? (
-                      r.allocations.map((a) => a.number).join(", ")
-                    ) : r.ref && r.ref.match(/^(INV|PUR)-/) ? (
-                      r.ref
-                    ) : (
-                      <span className="text-gray-400">—</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-gray-500 text-xs">{fmtMode(r.mode)}</td>
-                  <td className="px-4 py-3 font-mono text-xs text-gray-400">
-                    {r.ref && (r.allocations?.length || !r.ref.match(/^(INV|PUR)-/)) ? r.ref : "—"}
-                  </td>
-                  <td
-                    className={`px-4 py-3 text-right font-bold tabular-nums text-sm ${r.type === "in" ? "text-emerald-600" : "text-rose-600"}`}
-                  >
-                    {r.type === "out" ? "−" : "+"}
-                    {fmtMoney(r.amount)}
-                  </td>
-                  <td className="px-4 py-3 whitespace-nowrap">
-                    <button
-                      onClick={() => openEdit(r)}
-                      className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-blue-50 text-gray-400 hover:text-blue-600 transition"
-                      title="Edit payment"
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      onClick={() => handleDelete(r)}
-                      className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-rose-50 text-gray-400 hover:text-rose-500 transition"
-                      title="Delete payment"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-          {filtered.length > 0 && (
-            <tfoot className="sticky bottom-0 bg-gray-50 border-t-2 border-gray-200">
-              <tr>
-                <td colSpan={6} className="px-4 py-3 text-xs font-bold text-gray-500 uppercase">
-                  {filtered.length} record{filtered.length !== 1 ? "s" : ""}
-                </td>
-                <td className="px-4 py-3 text-right font-bold tabular-nums text-sm text-gray-800">
-                  {fmtMoney(
-                    filtered.reduce((s, r) => s + (r.type === "in" ? r.amount : -r.amount), 0),
-                  )}
-                </td>
-                <td />
-              </tr>
-            </tfoot>
-          )}
-        </table>
+      <div className="p-3 flex-1 min-h-0 flex">
+        <DataTable
+          columns={columns}
+          rows={filtered}
+          rowKey={(r) => r.id}
+          onRowActivate={openEdit}
+          onDelete={handleDelete}
+          emptyMessage="No payments recorded — use the buttons above to record one"
+        />
       </div>
-      <PaginationBar
-        page={pg.page}
-        totalPages={pg.totalPages}
-        pageSize={pg.pageSize}
-        total={pg.total}
-        onPage={pg.setPage}
-        onPageSize={pg.setPageSize}
-      />
 
       <ReceivePaymentDialog
         open={open}
@@ -325,6 +324,40 @@ function PaymentsPage() {
         editing={editing}
         onSaved={refresh}
       />
+    </div>
+  );
+}
+
+const PAYMENT_TONES = {
+  emerald: { bg: "bg-emerald-50", text: "text-emerald-600" },
+  rose: { bg: "bg-rose-50", text: "text-rose-600" },
+} as const;
+
+function PaymentCard({
+  icon: Icon,
+  label,
+  value,
+  tone,
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: number;
+  tone: keyof typeof PAYMENT_TONES;
+}) {
+  const t = PAYMENT_TONES[tone];
+  return (
+    <div className="shrink-0 flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border border-gray-100 bg-white">
+      <div className={`h-8 w-8 rounded-md flex items-center justify-center shrink-0 ${t.bg} ${t.text}`}>
+        <Icon className="h-4 w-4" />
+      </div>
+      <div className="min-w-0">
+        <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wide mb-0.5 whitespace-nowrap">
+          {label}
+        </p>
+        <p className={`text-[14px] font-bold tabular-nums whitespace-nowrap ${t.text}`}>
+          {fmtMoney(value)}
+        </p>
+      </div>
     </div>
   );
 }
@@ -366,7 +399,8 @@ function ReceivePaymentDialog({
 
   const [date, setDate] = useState(today());
   const [mode, setMode] = useState<PaymentMode>("cash");
-  const [ref, setRef] = useState("");
+  const [banks, setBanks] = useState<BankAccount[]>([]);
+  const [bankId, setBankId] = useState("");
   const [applyRows, setApplyRows] = useState<ApplyRow[]>([]);
   const [manualAmount, setManualAmount] = useState("");
   const [saving, setSaving] = useState(false);
@@ -380,19 +414,20 @@ function ReceivePaymentDialog({
   useEffect(() => {
     if (open) {
       setAllParties(PartyRepo.all());
+      setBanks(BankRepo.all());
       if (editing) {
         setPartyQ(editing.partyName);
         setSelectedParty({ id: editing.partyId, name: editing.partyName });
         setDate(editing.date);
         setMode(editing.mode);
-        setRef(editing.ref ?? "");
+        setBankId(editing.bankId ?? "");
         setManualAmount(editing.allocations?.length ? "" : String(editing.amount));
       } else {
         setPartyQ("");
         setSelectedParty(null);
         setDate(today());
         setMode("cash");
-        setRef("");
+        setBankId("");
         setManualAmount("");
         setTimeout(() => partyRef.current?.focus(), 60);
       }
@@ -439,6 +474,27 @@ function ReceivePaymentDialog({
   };
 
   const totalOutstanding = applyRows.reduce((s, r) => s + r.due, 0);
+  // The invoice-level "due" total above misses debt that isn't tied to any
+  // invoice at all — most commonly a party's opening balance carried over
+  // from before this system was used. Without this, a party who owes only
+  // an opening balance (no unpaid invoices) would show "₹0.00 outstanding /
+  // no invoices" here even though the Dashboard and their own statement
+  // correctly show they owe money.
+  const partyTrueBalance = (() => {
+    if (!selectedParty) return 0;
+    const repo = isIn ? SalesRepo : PurchaseRepo;
+    const returnRepo = isIn ? SaleReturnRepo : PurchaseReturnRepo;
+    const list = partyBalances(
+      repo.all(),
+      returnRepo.all(),
+      PaymentRepo.all().filter((p) => p.type === (isIn ? "in" : "out")),
+      PartyRepo.all().filter((p) => (isIn ? p.type !== "supplier" : p.type !== "customer")),
+    );
+    return list.find((b) => b.partyId === selectedParty.id)?.balance ?? 0;
+  })();
+  // Portion of the true balance not already represented by an open invoice
+  // row above (e.g. opening balance, or a manual ledger correction).
+  const unlinkedBalance = Math.max(0, r2(partyTrueBalance - totalOutstanding));
   const totalApplied = r2(applyRows.reduce((s, r) => s + r.apply, 0));
   // Advance / general payment whenever nothing is actually applied to an
   // invoice — not just when there are no open invoices at all. Without this,
@@ -490,6 +546,10 @@ function ReceivePaymentDialog({
       toast.error("Enter or select an amount to pay");
       return;
     }
+    if (mode === "bank" && !bankId) {
+      toast.error("Select which bank account this goes to");
+      return;
+    }
     savingRef.current = true;
     setSaving(true);
 
@@ -498,13 +558,20 @@ function ReceivePaymentDialog({
     // leave the Confirm button permanently stuck disabled/spinning — saving
     // state is only otherwise reset by the dialog's open effect.
     try {
+      // Party creation, invoice-paid changes, bank-balance changes, and the
+      // Payment record itself must all land together — a shared batch
+      // commits them atomically instead of independent writes that could
+      // partially fail (e.g. money moves on the bank account but the
+      // invoice never shows as paid).
+      const batch = newBatch();
+
       let partyId = selectedParty?.id ?? "";
       const partyName = selectedParty?.name ?? partyQ.trim();
       if (!partyId) {
         const match = allParties.find((p) => p.name.toLowerCase() === partyName.toLowerCase());
         partyId = match?.id ?? genId();
         if (!match)
-          PartyRepo.add({ id: partyId, name: partyName, type: "both", openingBalance: 0 });
+          PartyRepo.addBatched(batch, { id: partyId, name: partyName, type: "both", openingBalance: 0 });
       }
 
       const repo = isIn ? SalesRepo : PurchaseRepo;
@@ -512,8 +579,19 @@ function ReceivePaymentDialog({
       // Editing: first reverse this payment's previous applications (atomic)
       if (editing?.allocations?.length) {
         for (const a of editing.allocations) {
-          if (repo.get(a.invoiceId)) repo.adjustField(a.invoiceId, "paid", -a.amount);
+          if (repo.get(a.invoiceId)) repo.adjustFieldBatched(batch, a.invoiceId, "paid", -a.amount);
         }
+      }
+      // Editing: reverse the old bank-account effect too, before applying
+      // the new one below — handles both "same account, new amount" and
+      // "switched to a different account" correctly.
+      if (editing?.mode === "bank" && editing.bankId && BankRepo.get(editing.bankId)) {
+        BankRepo.adjustFieldBatched(
+          batch,
+          editing.bankId,
+          "balance",
+          editing.type === "in" ? -editing.amount : editing.amount,
+        );
       }
 
       // Apply to invoices — atomic increments so simultaneous cashiers both count.
@@ -533,7 +611,7 @@ function ReceivePaymentDialog({
           const amt = Math.min(r2(row.apply), liveDue);
           if (amt <= 0) continue;
           if (amt < r2(row.apply)) clamped = true;
-          repo.adjustField(cur.id, "paid", amt);
+          repo.adjustFieldBatched(batch, cur.id, "paid", amt);
           allocations.push({ invoiceId: cur.id, number: cur.number, amount: amt });
         }
       }
@@ -543,16 +621,21 @@ function ReceivePaymentDialog({
         );
       }
 
+      // Move money on the selected bank account for this (new) payment.
+      if (mode === "bank" && bankId) {
+        BankRepo.adjustFieldBatched(batch, bankId, "balance", isIn ? amount : -amount);
+      }
+
       // Record payment
       if (editing) {
-        PaymentRepo.update(editing.id, {
+        PaymentRepo.updateBatched(batch, editing.id, {
           date,
           partyId,
           partyName,
           type,
           amount: r2(amount),
           mode,
-          ref: ref.trim() || undefined,
+          bankId: mode === "bank" ? bankId : undefined,
           allocations: allocations.length ? allocations : undefined,
         });
       } else {
@@ -564,12 +647,14 @@ function ReceivePaymentDialog({
           type,
           amount: r2(amount),
           mode,
-          ref: ref.trim() || undefined,
+          bankId: mode === "bank" ? bankId : undefined,
           allocations: allocations.length ? allocations : undefined,
           createdAt: new Date().toISOString(),
         };
-        PaymentRepo.add(payment);
+        PaymentRepo.addBatched(batch, payment);
       }
+
+      commitBatch(batch, "save payment");
 
       const invWord = isIn ? "invoice" : "bill";
       if (editing) {
@@ -678,7 +763,7 @@ function ReceivePaymentDialog({
                   <p
                     className={`text-[22px] font-bold tabular-nums mt-0.5 ${isIn ? "text-emerald-700" : "text-rose-700"}`}
                   >
-                    {fmtMoney(totalOutstanding)}
+                    {fmtMoney(totalOutstanding + unlinkedBalance)}
                   </p>
                 </div>
                 {applyRows.length > 0 && (
@@ -702,8 +787,9 @@ function ReceivePaymentDialog({
               {applyRows.length === 0 ? (
                 <div className="flex items-center gap-2 text-xs text-gray-500 bg-white/60 rounded-md px-3 py-2">
                   <AlertCircle className="h-4 w-4 text-gray-400" />
-                  No outstanding {isIn ? "invoices" : "bills"} — this will be recorded as an advance
-                  payment
+                  {unlinkedBalance > 0.01
+                    ? `No open ${isIn ? "invoices" : "bills"}, but this party carries a balance of ${fmtMoney(unlinkedBalance)} (e.g. opening balance) — payment will be recorded as an advance against it`
+                    : `No outstanding ${isIn ? "invoices" : "bills"} — this will be recorded as an advance payment`}
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -819,7 +905,7 @@ function ReceivePaymentDialog({
           )}
 
           {/* Payment details */}
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1 text-[12px]">
               <label className="font-semibold text-gray-600">Date</label>
               <input
@@ -832,19 +918,41 @@ function ReceivePaymentDialog({
             <div className="flex flex-col gap-1 text-[12px]">
               <label className="font-semibold text-gray-600">Payment Mode</label>
               <div className="flex items-center h-8">
-                <ModePills value={mode} onChange={setMode} modes={["cash", "upi", "bank", "cheque"]} />
+                <ModePills
+                  value={mode}
+                  onChange={(m) => {
+                    setMode(m);
+                    if (m !== "bank") setBankId("");
+                  }}
+                  modes={["cash", "bank"]}
+                />
               </div>
             </div>
-            <div className="flex flex-col gap-1 text-[12px]">
-              <label className="font-semibold text-gray-600">Reference / Note</label>
-              <input
-                value={ref}
-                onChange={(e) => setRef(e.target.value)}
-                placeholder="UPI ref, cheque #…"
-                className="h-8 px-2 border rounded bg-white focus:border-primary outline-none text-sm"
-              />
-            </div>
           </div>
+
+          {mode === "bank" && (
+            <div className="flex flex-col gap-1 text-[12px]">
+              <label className="font-semibold text-gray-600">Bank Account *</label>
+              <select
+                value={bankId}
+                onChange={(e) => setBankId(e.target.value)}
+                className="h-9 px-2 border rounded-md bg-white focus:border-primary outline-none text-sm"
+              >
+                <option value="">Select bank account…</option>
+                {banks.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                    {b.accountNumber ? ` — ${b.accountNumber}` : ""} ({fmtMoney(b.balance)})
+                  </option>
+                ))}
+              </select>
+              {banks.length === 0 && (
+                <p className="text-[11px] text-amber-600">
+                  No bank accounts set up yet — add one from Bank Accounts first.
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Total + Actions */}
           <div

@@ -9,6 +9,16 @@ import { today } from "@/lib/format";
 import { APP_VERSION } from "@/lib/version";
 import { auth, isBrowser } from "@/lib/firebase";
 import type { Company } from "@/types";
+import {
+  Settings as SettingsIcon,
+  Building2,
+  Database,
+  Keyboard,
+  Download,
+  Upload,
+  Trash2,
+  ShieldCheck,
+} from "lucide-react";
 
 export const Route = createFileRoute("/settings")({ component: SettingsPage });
 
@@ -49,15 +59,15 @@ function SettingsPage() {
     records.map((r) =>
       Array.isArray(r?.lineItems)
         ? {
-            ...r,
-            lineItems: r.lineItems.map((l: any) => ({
-              ...l,
-              qty: Number(l?.qty) || 0,
-              price: Number(l?.price) || 0,
-              discountPct: Number(l?.discountPct) || 0,
-              gstRate: Number(l?.gstRate) || 0,
-            })),
-          }
+          ...r,
+          lineItems: r.lineItems.map((l: any) => ({
+            ...l,
+            qty: Number(l?.qty) || 0,
+            price: Number(l?.price) || 0,
+            discountPct: Number(l?.discountPct) || 0,
+            gstRate: Number(l?.gstRate) || 0,
+          })),
+        }
         : r,
     );
 
@@ -119,12 +129,20 @@ function SettingsPage() {
   };
 
   return (
-    <div className="flex flex-col h-full">
-      <PageHeader title="Settings" subtitle="Company & preferences" />
-      <div className="p-4 space-y-6 overflow-auto max-w-3xl">
-        <form onSubmit={save} className="border rounded-md bg-card p-4">
-          <h2 className="font-semibold text-sm mb-3">Company Details</h2>
-          <div className="grid grid-cols-2 gap-3">
+    <div className="flex flex-col h-full bg-[#f5f6fa]">
+      <PageHeader
+        title="Settings"
+        subtitle="Company & preferences"
+        icon={<SettingsIcon className="h-5 w-5" />}
+      />
+      <div className="p-5 space-y-4 overflow-auto max-w-3xl">
+        <form onSubmit={save} className="bg-white border border-gray-100 rounded-lg shadow-sm overflow-hidden">
+          <SectionHeader
+            icon={<Building2 className="h-4 w-4" />}
+            title="Company Details"
+            description="Shown on every invoice, bill, and printed document"
+          />
+          <div className="p-5 grid grid-cols-2 gap-4">
             <div className="col-span-2">
               <Field
                 label="Company Name *"
@@ -169,68 +187,82 @@ function SettingsPage() {
                 onChange={(e) => setC({ ...c, address: e.target.value })}
               />
             </div>
-            <label className="col-span-2 flex items-center gap-2 text-[13px] cursor-pointer select-none mt-1">
-              <input
-                type="checkbox"
+            <div className="col-span-2 space-y-2 pt-1">
+              <ToggleRow
                 checked={c.enableRoundOff !== false}
-                onChange={(e) => setC({ ...c, enableRoundOff: e.target.checked })}
-                className="accent-primary"
+                onChange={(v) => setC({ ...c, enableRoundOff: v })}
+                label="Round off invoice totals to nearest rupee"
+                hint="e.g. ₹487.37 → ₹487"
               />
-              <span className="font-medium">Round off invoice totals to nearest rupee</span>
-              <span className="text-xs text-muted-foreground">(e.g. ₹487.37 → ₹487)</span>
-            </label>
+              <ToggleRow
+                checked={c.allowNegativeStock !== false}
+                onChange={(v) => setC({ ...c, allowNegativeStock: v })}
+                label="Allow selling below available stock"
+                hint="Turn off to block sales/returns that would take stock negative"
+              />
+            </div>
           </div>
-          <div className="mt-3 flex justify-end">
+          <div className="px-5 py-3 border-t bg-gray-50/60 flex justify-end">
             <Button type="submit">
               Save <kbd className="ml-1 text-[10px]">Ctrl+S</kbd>
             </Button>
           </div>
         </form>
 
-        <div className="border rounded-md bg-card p-4">
-          <h2 className="font-semibold text-sm mb-3">Account & Data</h2>
-          {userEmail && (
-            <p className="text-xs text-muted-foreground mb-3">
-              Signed in as <span className="font-semibold text-foreground">{userEmail}</span> · Data
-              is stored securely in the cloud (Firebase) and works offline too. · App version: {APP_VERSION}
+        <div className="bg-white border border-gray-100 rounded-lg shadow-sm overflow-hidden">
+          <SectionHeader
+            icon={<Database className="h-4 w-4" />}
+            title="Account & Data"
+            description="Backups, restore, and cloud sync status"
+          />
+          <div className="p-5">
+            {userEmail && (
+              <div className="flex items-start gap-2 text-xs text-gray-500 mb-4 bg-emerald-50/60 border border-emerald-100 rounded-md px-3 py-2.5">
+                <ShieldCheck className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
+                <p>
+                  Signed in as <span className="font-semibold text-gray-800">{userEmail}</span> ·
+                  Data is stored securely in the cloud (Firebase) and works offline too. · App
+                  version: {APP_VERSION}
+                </p>
+              </div>
+            )}
+            <div className="flex gap-2 flex-wrap">
+              <Button type="button" variant="outline" disabled={busy} onClick={exportData}>
+                <Download className="h-3.5 w-3.5" /> Export Backup (JSON)
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busy}
+                onClick={() => importRef.current?.click()}
+              >
+                <Upload className="h-3.5 w-3.5" /> Import Backup
+              </Button>
+              <input
+                ref={importRef}
+                type="file"
+                accept=".json,application/json"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) importData(file);
+                  e.target.value = "";
+                }}
+              />
+              <Button type="button" variant="destructive" disabled={busy} onClick={clearAll}>
+                <Trash2 className="h-3.5 w-3.5" /> Clear All Data
+              </Button>
+            </div>
+            <p className="text-xs text-gray-400 mt-3">
+              Backups download as JSON files. Old backups from the localStorage version restore
+              fine too.
             </p>
-          )}
-          <div className="flex gap-2 flex-wrap">
-            <Button type="button" variant="outline" disabled={busy} onClick={exportData}>
-              Export Backup (JSON)
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy}
-              onClick={() => importRef.current?.click()}
-            >
-              Import Backup
-            </Button>
-            <input
-              ref={importRef}
-              type="file"
-              accept=".json,application/json"
-              className="hidden"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) importData(file);
-                e.target.value = "";
-              }}
-            />
-            <Button type="button" variant="destructive" disabled={busy} onClick={clearAll}>
-              Clear All Data
-            </Button>
           </div>
-          <p className="text-xs text-muted-foreground mt-2">
-            Backups download as JSON files. Old backups from the localStorage version restore fine
-            too.
-          </p>
         </div>
 
-        <div className="border rounded-md bg-card p-4">
-          <h2 className="font-semibold text-sm mb-3">Keyboard Shortcuts</h2>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
+        <div className="bg-white border border-gray-100 rounded-lg shadow-sm overflow-hidden">
+          <SectionHeader icon={<Keyboard className="h-4 w-4" />} title="Keyboard Shortcuts" />
+          <div className="p-5 grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
             {[
               ["Ctrl+F", "Global search"],
               ["Ctrl+N", "New sale"],
@@ -245,14 +277,65 @@ function SettingsPage() {
               ["Enter", "Open / select"],
               ["Ctrl+Delete", "Delete row"],
             ].map(([k, l]) => (
-              <div key={k} className="flex justify-between border-b py-1">
-                <kbd>{k}</kbd>
-                <span className="text-muted-foreground">{l}</span>
+              <div key={k} className="flex items-center justify-between border-b border-gray-100 py-1.5">
+                <kbd className="font-mono text-[11px] bg-gray-100 border border-gray-200 rounded px-1.5 py-0.5 text-gray-600">
+                  {k}
+                </kbd>
+                <span className="text-gray-500">{l}</span>
               </div>
             ))}
           </div>
         </div>
       </div>
     </div>
+  );
+}
+
+function SectionHeader({
+  icon,
+  title,
+  description,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description?: string;
+}) {
+  return (
+    <div className="px-5 py-3.5 border-b border-gray-100 flex items-center gap-3">
+      <div className="h-8 w-8 rounded-md bg-primary-soft text-primary flex items-center justify-center shrink-0">
+        {icon}
+      </div>
+      <div className="min-w-0">
+        <h2 className="font-bold text-[14px] text-gray-800">{title}</h2>
+        {description && <p className="text-[11px] text-gray-400 mt-0.5">{description}</p>}
+      </div>
+    </div>
+  );
+}
+
+function ToggleRow({
+  checked,
+  onChange,
+  label,
+  hint,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  label: string;
+  hint: string;
+}) {
+  return (
+    <label className="flex items-start gap-3 rounded-md border border-gray-100 bg-gray-50/60 px-3 py-2.5 cursor-pointer select-none hover:bg-gray-50 transition">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="accent-primary mt-0.5 shrink-0"
+      />
+      <span>
+        <span className="block text-[13px] font-medium text-gray-800">{label}</span>
+        <span className="block text-[11px] text-gray-400 mt-0.5">{hint}</span>
+      </span>
+    </label>
   );
 }

@@ -16,7 +16,17 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Field } from "@/components/Field";
 import { NumField } from "@/components/NumInput";
 import { fmtMoney } from "@/lib/format";
-import { Plus, Search, Pencil, FileText } from "lucide-react";
+import { partyBalances } from "@/lib/ledger";
+import {
+  Plus,
+  Search,
+  Pencil,
+  FileText,
+  Users,
+  ArrowDownCircle,
+  ArrowUpCircle,
+  type LucideIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/parties")({ component: PartiesPage });
@@ -48,6 +58,25 @@ function PartiesPage() {
     return !s || r.name.toLowerCase().includes(s) || r.phone?.includes(s);
   });
 
+  // Same per-party balance rules as the Dashboard/Customer-Supplier Ledger,
+  // so this total always agrees with those pages.
+  const customerBalances = partyBalances(
+    SalesRepo.all(),
+    SaleReturnRepo.all(),
+    PaymentRepo.all().filter((p) => p.type === "in"),
+    rows.filter((p) => p.type !== "supplier"),
+    "customer",
+  );
+  const supplierBalances = partyBalances(
+    PurchaseRepo.all(),
+    PurchaseReturnRepo.all(),
+    PaymentRepo.all().filter((p) => p.type === "out"),
+    rows.filter((p) => p.type !== "customer"),
+    "supplier",
+  );
+  const receivable = customerBalances.reduce((a, b) => a + Math.max(0, b.balance), 0);
+  const payable = supplierBalances.reduce((a, b) => a + Math.max(0, b.balance), 0);
+
   const columns: Column<Party>[] = [
     {
       key: "name",
@@ -73,7 +102,7 @@ function PartiesPage() {
     },
     {
       key: "actions",
-      label: "",
+      label: "Action",
       width: "90px",
       align: "center",
       render: (r) => (
@@ -109,30 +138,33 @@ function PartiesPage() {
       <PageHeader
         title="Parties"
         subtitle={`${rows.length} customers / suppliers`}
+        icon={<Users className="h-5 w-5" />}
         actions={
-          <Button
-            size="sm"
-            onClick={() => {
-              setEdit(null);
-              setOpen(true);
-            }}
-          >
-            <Plus className="h-3.5 w-3.5" /> New Party <kbd className="text-[10px] ml-1">N</kbd>
-          </Button>
+          <>
+            <PartyCard icon={ArrowDownCircle} label="Total Receivable" value={receivable} tone="emerald" />
+            <PartyCard icon={ArrowUpCircle} label="Total Payable" value={payable} tone="rose" />
+            <div className="relative w-44 lg:w-56">
+              <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                autoFocus
+                placeholder="Search parties..."
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                className="w-full h-8 pl-8 pr-3 border border-gray-200 rounded-md text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
+              />
+            </div>
+            <Button
+              size="sm"
+              onClick={() => {
+                setEdit(null);
+                setOpen(true);
+              }}
+            >
+              <Plus className="h-3.5 w-3.5" /> New Party <kbd className="text-[10px] ml-1">N</kbd>
+            </Button>
+          </>
         }
       />
-      <div className="p-3 flex gap-2 border-b bg-card">
-        <div className="relative flex-1 max-w-md">
-          <Search className="h-3.5 w-3.5 absolute left-2 top-2.5 text-muted-foreground" />
-          <input
-            autoFocus
-            placeholder="Search parties..."
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            className="h-8 pl-7 pr-2 border rounded w-full bg-background focus:border-primary outline-none"
-          />
-        </div>
-      </div>
       <div className="p-3 flex-1 min-h-0 flex">
         <DataTable
           columns={columns}
@@ -206,6 +238,15 @@ export function PartyDialog({
       toast.error("Name is required");
       return;
     }
+    // Repeat parties cannot be added — block duplicate names (case/spacing
+    // insensitive) so "ABC" and "abc " don't end up as two separate parties.
+    const dup = PartyRepo.all().find(
+      (p) => p.name.trim().toLowerCase() === form.name!.trim().toLowerCase() && p.id !== party?.id,
+    );
+    if (dup) {
+      toast.error(`Party "${dup.name}" already exists — repeat parties cannot be added`);
+      return;
+    }
     setSaving(true);
     if (party) {
       PartyRepo.update(party.id, form as Party);
@@ -234,7 +275,7 @@ export function PartyDialog({
         <DialogHeader>
           <DialogTitle>{party ? "Edit Party" : "New Party"}</DialogTitle>
         </DialogHeader>
-        <form onSubmit={save} className="grid grid-cols-2 gap-3">
+        <form onSubmit={save} className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Field
             ref={firstRef}
             label="Name *"
@@ -276,6 +317,43 @@ export function PartyDialog({
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+const PARTY_TONES = {
+  emerald: { bg: "bg-emerald-50", text: "text-emerald-600" },
+  rose: { bg: "bg-rose-50", text: "text-rose-600" },
+  primary: { bg: "bg-primary-soft", text: "text-primary" },
+} as const;
+
+function PartyCard({
+  icon: Icon,
+  label,
+  value,
+  tone,
+  isCount,
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: number;
+  tone: keyof typeof PARTY_TONES;
+  isCount?: boolean;
+}) {
+  const t = PARTY_TONES[tone];
+  return (
+    <div className="shrink-0 flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border border-gray-100 bg-white">
+      <div className={`h-8 w-8 rounded-md flex items-center justify-center shrink-0 ${t.bg} ${t.text}`}>
+        <Icon className="h-4 w-4" />
+      </div>
+      <div className="min-w-0">
+        <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wide mb-0.5 whitespace-nowrap">
+          {label}
+        </p>
+        <p className={`text-[14px] font-bold tabular-nums whitespace-nowrap ${t.text}`}>
+          {isCount ? value : fmtMoney(value)}
+        </p>
+      </div>
+    </div>
   );
 }
 

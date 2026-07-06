@@ -6,6 +6,16 @@ interface Props {
   inv: Invoice;
   company: Company;
   mode: "sale" | "purchase";
+  /** "print-area" (default) stays hidden until printed — used for the
+   * always-mounted copy inside the create/edit form. Detail pages that show
+   * this invoice on screen too should pass "print-visible" instead. */
+  className?: string;
+  /** Shrinks every font-size/padding/column-width proportionally — used to
+   * fit two copies side by side on one landscape page. Deliberately NOT done
+   * via CSS `zoom`: Chrome computes print page-breaks from the pre-zoom
+   * layout size, so a zoomed block can get cut off mid-page even though it
+   * visually looks like it fits — real layout-level scaling avoids that. */
+  scale?: number;
 }
 
 // Number to words (Indian) - simple version
@@ -63,7 +73,13 @@ function numToWords(n: number): string {
   return s + " Only";
 }
 
-export function PrintableInvoice({ inv, company, mode }: Props) {
+export function PrintableInvoice({
+  inv,
+  company,
+  mode,
+  className = "print-area",
+  scale = 1,
+}: Props) {
   const gstOn = inv.gstEnabled !== false;
   const isSale = mode === "sale";
   const title = gstOn ? "TAX INVOICE" : isSale ? "INVOICE / BILL OF SUPPLY" : "PURCHASE BILL";
@@ -90,10 +106,15 @@ export function PrintableInvoice({ inv, company, mode }: Props) {
 
   const totalQty = inv.lineItems.reduce((s, l) => s + l.qty, 0);
 
+  // Every font-size / padding / column-width number below goes through this,
+  // so `scale` genuinely shrinks the rendered layout instead of just the
+  // visual appearance.
+  const s = (n: number) => Math.round(n * scale * 10) / 10;
+
   const cellStyle: React.CSSProperties = {
     border: "1px solid #000",
-    padding: "6px 8px",
-    fontSize: 11,
+    padding: `${s(6)}px ${s(8)}px`,
+    fontSize: s(11),
   };
   const th: React.CSSProperties = {
     ...cellStyle,
@@ -103,47 +124,49 @@ export function PrintableInvoice({ inv, company, mode }: Props) {
   };
 
   return (
-    <div className="print-area" style={{ fontFamily: "Arial, sans-serif", color: "#000" }}>
+    <div className={className} style={{ fontFamily: "Arial, sans-serif", color: "#000" }}>
       {/* Header */}
       <div
         style={{
           textAlign: "center",
           borderBottom: "2px solid #000",
-          paddingBottom: 8,
-          marginBottom: 8,
+          paddingBottom: s(8),
+          marginBottom: s(8),
         }}
       >
-        <div style={{ fontSize: 10, fontWeight: 600 }}>{title}</div>
-        <div style={{ fontSize: 20, fontWeight: 800, marginTop: 2 }}>
+        <div style={{ fontSize: s(10), fontWeight: 600 }}>{title}</div>
+        <div style={{ fontSize: s(20), fontWeight: 800, marginTop: s(2) }}>
           {company.name || "Your Company"}
         </div>
-        {company.address && <div style={{ fontSize: 11 }}>{company.address}</div>}
-        <div style={{ fontSize: 11 }}>
+        {company.address && <div style={{ fontSize: s(11) }}>{company.address}</div>}
+        <div style={{ fontSize: s(11) }}>
           {company.phone && <>Phone: {company.phone}</>}
           {company.phone && company.email && " · "}
           {company.email && <>Email: {company.email}</>}
         </div>
         {gstOn && company.gstin && (
-          <div style={{ fontSize: 11, fontWeight: 600 }}>GSTIN: {company.gstin}</div>
+          <div style={{ fontSize: s(11), fontWeight: 600 }}>GSTIN: {company.gstin}</div>
         )}
       </div>
 
       {/* Party + Invoice meta */}
-      <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 8 }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: s(8) }}>
         <tbody>
           <tr>
-            <td style={{ ...cellStyle, width: "60%", verticalAlign: "top" }}>
-              <div style={{ fontSize: 10, color: "#555", fontWeight: 600, marginBottom: 3 }}>
+            <td style={{ ...cellStyle, verticalAlign: "top" }}>
+              <div
+                style={{ fontSize: s(10), color: "#555", fontWeight: 600, marginBottom: s(3) }}
+              >
                 {isSale ? "BILL TO" : "SUPPLIER"}
               </div>
-              <div style={{ fontSize: 14, fontWeight: 700 }}>{inv.partyName || "—"}</div>
+              <div style={{ fontSize: s(14), fontWeight: 700 }}>{inv.partyName || "—"}</div>
               {inv.partyPhone && <div>Phone: {inv.partyPhone}</div>}
             </td>
-            <td style={{ ...cellStyle, verticalAlign: "top" }}>
-              <table style={{ width: "100%", fontSize: 11 }}>
+            <td style={{ ...cellStyle, width: "1%", whiteSpace: "nowrap", verticalAlign: "top" }}>
+              <table style={{ width: "auto", fontSize: s(11) }}>
                 <tbody>
                   <tr>
-                    <td style={{ fontWeight: 600, paddingRight: 6 }}>Invoice #:</td>
+                    <td style={{ fontWeight: 600, paddingRight: s(6) }}>Invoice #:</td>
                     <td>{inv.number}</td>
                   </tr>
                   <tr>
@@ -165,15 +188,15 @@ export function PrintableInvoice({ inv, company, mode }: Props) {
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead>
           <tr>
-            <th style={{ ...th, width: 28, textAlign: "center" }}>#</th>
+            <th style={{ ...th, width: s(28), textAlign: "center" }}>#</th>
             <th style={th}>Item</th>
-            <th style={{ ...th, textAlign: "right", width: 55 }}>Qty</th>
-            <th style={{ ...th, width: 45 }}>Unit</th>
-            <th style={{ ...th, textAlign: "right", width: 75 }}>Price</th>
-            <th style={{ ...th, textAlign: "right", width: 55 }}>Disc%</th>
-            {gstOn && <th style={{ ...th, textAlign: "right", width: 55 }}>GST%</th>}
-            {gstOn && <th style={{ ...th, textAlign: "right", width: 75 }}>GST Amt</th>}
-            <th style={{ ...th, textAlign: "right", width: 90 }}>Amount</th>
+            <th style={{ ...th, textAlign: "right", width: s(55) }}>Qty</th>
+            <th style={{ ...th, width: s(45) }}>Unit</th>
+            <th style={{ ...th, textAlign: "right", width: s(75) }}>Price</th>
+            <th style={{ ...th, textAlign: "right", width: s(55) }}>Disc%</th>
+            {gstOn && <th style={{ ...th, textAlign: "right", width: s(55) }}>GST%</th>}
+            {gstOn && <th style={{ ...th, textAlign: "right", width: s(75) }}>GST Amt</th>}
+            <th style={{ ...th, textAlign: "right", width: s(90) }}>Amount</th>
           </tr>
         </thead>
         <tbody>
@@ -200,7 +223,7 @@ export function PrintableInvoice({ inv, company, mode }: Props) {
           {inv.lineItems.length < 6 &&
             Array.from({ length: 6 - inv.lineItems.length }).map((_, i) => (
               <tr key={"e" + i}>
-                <td style={{ ...cellStyle, height: 20 }}>&nbsp;</td>
+                <td style={{ ...cellStyle, height: s(20) }}>&nbsp;</td>
                 <td style={cellStyle}></td>
                 <td style={cellStyle}></td>
                 <td style={cellStyle}></td>
@@ -230,24 +253,35 @@ export function PrintableInvoice({ inv, company, mode }: Props) {
       </table>
 
       {/* Totals + tax summary */}
-      <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8 }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", marginTop: s(8) }}>
         <tbody>
           <tr>
             <td style={{ ...cellStyle, width: "58%", verticalAlign: "top" }}>
-              <div style={{ fontSize: 10, fontWeight: 700, marginBottom: 4 }}>Amount in Words</div>
-              <div style={{ fontSize: 11, fontStyle: "italic" }}>{numToWords(inv.total)}</div>
+              <div style={{ fontSize: s(10), fontWeight: 700, marginBottom: s(4) }}>
+                Amount in Words
+              </div>
+              <div style={{ fontSize: s(11), fontStyle: "italic" }}>{numToWords(inv.total)}</div>
               {inv.notes && (
                 <>
-                  <div style={{ fontSize: 10, fontWeight: 700, marginTop: 8, marginBottom: 3 }}>
+                  <div
+                    style={{
+                      fontSize: s(10),
+                      fontWeight: 700,
+                      marginTop: s(8),
+                      marginBottom: s(3),
+                    }}
+                  >
                     Notes
                   </div>
-                  <div style={{ fontSize: 11 }}>{inv.notes}</div>
+                  <div style={{ fontSize: s(11) }}>{inv.notes}</div>
                 </>
               )}
               {gstOn && Object.keys(gstBuckets).length > 0 && (
-                <div style={{ marginTop: 8 }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, marginBottom: 3 }}>Tax Summary</div>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                <div style={{ marginTop: s(8) }}>
+                  <div style={{ fontSize: s(10), fontWeight: 700, marginBottom: s(3) }}>
+                    Tax Summary
+                  </div>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: s(10) }}>
                     <thead>
                       <tr>
                         <th style={th}>GST %</th>
@@ -279,55 +313,67 @@ export function PrintableInvoice({ inv, company, mode }: Props) {
               )}
             </td>
             <td style={{ ...cellStyle, verticalAlign: "top", padding: 0 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: s(12) }}>
                 <tbody>
                   <tr>
-                    <td style={{ padding: "5px 8px" }}>Subtotal</td>
-                    <td style={{ padding: "5px 8px", textAlign: "right" }}>
+                    <td style={{ padding: `${s(5)}px ${s(8)}px` }}>Subtotal</td>
+                    <td style={{ padding: `${s(5)}px ${s(8)}px`, textAlign: "right" }}>
                       {fmtMoney(taxableTotal)}
                     </td>
                   </tr>
                   {inv.discount > 0 && (
                     <tr>
-                      <td style={{ padding: "5px 8px" }}>Discount</td>
-                      <td style={{ padding: "5px 8px", textAlign: "right" }}>
+                      <td style={{ padding: `${s(5)}px ${s(8)}px` }}>Discount</td>
+                      <td style={{ padding: `${s(5)}px ${s(8)}px`, textAlign: "right" }}>
                         - {fmtMoney(inv.discount)}
                       </td>
                     </tr>
                   )}
                   {gstOn && (
                     <tr>
-                      <td style={{ padding: "5px 8px" }}>Total GST</td>
-                      <td style={{ padding: "5px 8px", textAlign: "right" }}>
+                      <td style={{ padding: `${s(5)}px ${s(8)}px` }}>Total GST</td>
+                      <td style={{ padding: `${s(5)}px ${s(8)}px`, textAlign: "right" }}>
                         {fmtMoney(inv.taxAmount)}
+                      </td>
+                    </tr>
+                  )}
+                  {!!inv.shippingCharge && inv.shippingCharge > 0 && (
+                    <tr>
+                      <td style={{ padding: `${s(5)}px ${s(8)}px` }}>Shipping Charge</td>
+                      <td style={{ padding: `${s(5)}px ${s(8)}px`, textAlign: "right" }}>
+                        {fmtMoney(inv.shippingCharge)}
                       </td>
                     </tr>
                   )}
                   {!!inv.roundOff && Math.abs(inv.roundOff) > 0.001 && (
                     <tr>
-                      <td style={{ padding: "5px 8px" }}>Round Off</td>
-                      <td style={{ padding: "5px 8px", textAlign: "right" }}>
+                      <td style={{ padding: `${s(5)}px ${s(8)}px` }}>Round Off</td>
+                      <td style={{ padding: `${s(5)}px ${s(8)}px`, textAlign: "right" }}>
                         {inv.roundOff > 0 ? "+" : "−"} {fmtMoney(Math.abs(inv.roundOff))}
                       </td>
                     </tr>
                   )}
-                  <tr style={{ background: "#f0f0f0", fontWeight: 800, fontSize: 14 }}>
-                    <td style={{ padding: "8px", borderTop: "2px solid #000" }}>Grand Total</td>
-                    <td style={{ padding: "8px", textAlign: "right", borderTop: "2px solid #000" }}>
+                  <tr style={{ background: "#f0f0f0", fontWeight: 800, fontSize: s(14) }}>
+                    <td style={{ padding: s(8), borderTop: "2px solid #000" }}>Grand Total</td>
+                    <td
+                      style={{ padding: s(8), textAlign: "right", borderTop: "2px solid #000" }}
+                    >
                       {fmtMoney(inv.total)}
                     </td>
                   </tr>
                   <tr>
-                    <td style={{ padding: "5px 8px" }}>Paid</td>
-                    <td style={{ padding: "5px 8px", textAlign: "right" }}>{fmtMoney(inv.paid)}</td>
+                    <td style={{ padding: `${s(5)}px ${s(8)}px` }}>Paid</td>
+                    <td style={{ padding: `${s(5)}px ${s(8)}px`, textAlign: "right" }}>
+                      {fmtMoney(inv.paid)}
+                    </td>
                   </tr>
                   <tr style={{ fontWeight: 700 }}>
-                    <td style={{ padding: "5px 8px", borderTop: "1px solid #000" }}>
+                    <td style={{ padding: `${s(5)}px ${s(8)}px`, borderTop: "1px solid #000" }}>
                       Balance {inv.total - inv.paid > 0 ? "Due" : "Paid"}
                     </td>
                     <td
                       style={{
-                        padding: "5px 8px",
+                        padding: `${s(5)}px ${s(8)}px`,
                         textAlign: "right",
                         borderTop: "1px solid #000",
                       }}
@@ -343,40 +389,49 @@ export function PrintableInvoice({ inv, company, mode }: Props) {
       </table>
 
       {/* Footer */}
-      <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 20 }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", marginTop: s(20) }}>
         <tbody>
           <tr>
-            <td style={{ width: "50%", fontSize: 10, verticalAlign: "top", paddingRight: 12 }}>
-              <div style={{ fontWeight: 700, marginBottom: 4 }}>Terms &amp; Conditions</div>
+            <td
+              style={{
+                width: "50%",
+                fontSize: s(10),
+                verticalAlign: "top",
+                paddingRight: s(12),
+              }}
+            >
+              <div style={{ fontWeight: 700, marginBottom: s(4) }}>Terms &amp; Conditions</div>
               <div>1. Goods once sold will not be taken back.</div>
               <div>2. Interest @18% p.a. will be charged on delayed payments.</div>
               <div>3. Subject to local jurisdiction.</div>
             </td>
             <td
-              style={{ width: "50%", textAlign: "right", verticalAlign: "bottom", paddingTop: 40 }}
+              style={{
+                width: "50%",
+                textAlign: "right",
+                verticalAlign: "bottom",
+                paddingTop: s(40),
+              }}
             >
               <div
                 style={{
                   borderTop: "1px solid #000",
                   display: "inline-block",
-                  paddingTop: 4,
-                  minWidth: 200,
-                  fontSize: 11,
+                  paddingTop: s(4),
+                  minWidth: s(200),
+                  fontSize: s(11),
                   fontWeight: 600,
                 }}
               >
                 For {company.name || "Company"}
                 <br />
-                <span style={{ fontWeight: 400, fontSize: 10 }}>Authorised Signatory</span>
+                <span style={{ fontWeight: 400, fontSize: s(10) }}>Authorised Signatory</span>
               </div>
             </td>
           </tr>
         </tbody>
       </table>
 
-      <div style={{ textAlign: "center", marginTop: 12, fontSize: 10, color: "#555" }}>
-        This is a computer-generated invoice.
-      </div>
     </div>
   );
 }

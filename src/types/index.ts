@@ -60,12 +60,19 @@ export interface Invoice {
   lineItems: LineItem[];
   subtotal: number;
   discount: number;
+  /** Flat shipping/freight charge added to the total (sale bills only). */
+  shippingCharge?: number;
   taxAmount: number;
   /** Rounding applied to reach a whole-rupee total (e.g. −0.37 or +0.45) */
   roundOff?: number;
   total: number;
   paid: number;
   paymentMode: PaymentMode;
+  /** Which bank account `paid` was collected into/from — only set when paymentMode is "bank". */
+  bankId?: ID;
+  /** Snapshot of `paid` at the moment it was attributed to bankId, so an edit can
+   * reverse exactly that amount even if `paid` later grows via Payment allocations. */
+  bankPaidAmount?: number;
   notes?: string;
   createdAt: string;
 }
@@ -139,6 +146,8 @@ export interface Payment {
   type: "in" | "out";
   amount: number;
   mode: PaymentMode;
+  /** Which bank account this moved money into/out of — only set when mode is "bank". */
+  bankId?: ID;
   ref?: string;
   allocations?: PaymentAllocation[];
   createdAt: string;
@@ -161,7 +170,7 @@ export interface Return {
   createdAt: string;
 }
 
-export type PrintFormat = "a4" | "thermal80" | "thermal58";
+export type PrintFormat = "a4" | "a4-2up" | "thermal80" | "thermal58";
 
 export interface Company {
   name: string;
@@ -175,6 +184,11 @@ export interface Company {
   enableGst?: boolean;
   /** Round invoice totals to the nearest rupee (default on) */
   enableRoundOff?: boolean;
+  /** Allow a sale/purchase-return to push item stock below zero (default on,
+   * matching Vyapar/Tally — counter billing shouldn't block on stock entry
+   * lagging behind). When turned off, such saves are blocked with an error
+   * instead of just a warning. */
+  allowNegativeStock?: boolean;
   /** Preferred print format, remembered from the invoice page */
   printFormat?: PrintFormat;
 }

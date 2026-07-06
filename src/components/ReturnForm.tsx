@@ -17,7 +17,9 @@ import { fmtMoney, today } from "@/lib/format";
 import { toast } from "sonner";
 import { Trash2, UserPlus, Save, X, CornerDownLeft, CornerUpLeft, Loader2 } from "lucide-react";
 import { genId, newBatch, commitBatch } from "@/repositories/base";
+import { stockShortfalls } from "@/lib/stock";
 import { NumInput } from "@/components/NumInput";
+import { QuickAddPartyDialog, type QuickAddPartyDetails } from "@/components/QuickAddPartyDialog";
 
 interface Props {
   mode: "sale-return" | "purchase-return";
@@ -43,7 +45,8 @@ export function ReturnForm({ mode }: Props) {
     partyId: "",
     partyName: "",
     partyPhone: "",
-    gstEnabled: company.enableGst !== false,
+    // Matches InvoiceForm — starts off, turned on per-document when needed.
+    gstEnabled: false,
     lineItems: [],
     subtotal: 0,
     taxAmount: 0,
@@ -61,6 +64,10 @@ export function ReturnForm({ mode }: Props) {
   const [partyIdx, setPartyIdx] = useState(0);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
+  // A party typed at the counter that doesn't exist yet is no longer
+  // silently created with just a bare name — this opens a quick-add dialog
+  // asking for phone/opening balance/GSTIN before it's actually created.
+  const [quickAddParty, setQuickAddParty] = useState<{ name: string; phone: string } | null>(null);
 
   // "Return against invoice": search the original bill and auto-load its items
   const [invQ, setInvQ] = useState("");
@@ -186,10 +193,51 @@ export function ReturnForm({ mode }: Props) {
     setRet({ ...ret, gstEnabled: newGst, lineItems: lines, ...recalc(lines, newGst) });
   };
 
+  // Runs once the party is fully resolved — either an existing match, or a
+  // brand-new one whose details were just collected via the quick-add
+  // dialog (never silently defaulted to just a bare name, as before).
+  const finalizeSave = (party: { id: string; name: string } | { create: Party }) => {
+    savingRef.current = true;
+    setSaving(true);
+
+    // The new party (if any), the return document, and its stock adjustments
+    // must all land together or not at all — a shared batch commits them as
+    // one atomic Firestore write, so a failed commit can't leave an orphaned
+    // party with no corresponding return.
+    const batch = newBatch();
+
+    let partyId: string;
+    let partyName: string;
+    if ("create" in party) {
+      PartyRepo.addBatched(batch, party.create);
+      partyId = party.create.id;
+      partyName = party.create.name;
+      toast.success(`New party added: ${partyName}`);
+    } else {
+      partyId = party.id;
+      partyName = party.name;
+    }
+
+    const finalRet: Return = { ...ret, partyId, partyName, createdAt: new Date().toISOString() };
+
+    // Sale Return → items come BACK to stock (+qty)
+    // Purchase Return → items GO BACK to supplier (-qty)
+    const stockDelta = isSaleReturn ? 1 : -1;
+    for (const l of finalRet.lineItems) {
+      const it = ItemRepo.get(l.itemId);
+      if (it) ItemRepo.adjustFieldBatched(batch, it.id, "stock", stockDelta * l.qty);
+    }
+
+    repo.addBatched(batch, finalRet as any);
+    commitBatch(batch, `save ${isSaleReturn ? "sale return" : "purchase return"}`);
+    toast.success(`${isSaleReturn ? "Sale Return" : "Purchase Return"} saved`);
+    navigate({ to: backPath });
+  };
+
   const save = () => {
     if (savingRef.current) return; // double-click protection
-    let partyId = ret.partyId;
-    let partyName = ret.partyName || partyQ.trim();
+    const partyId = ret.partyId;
+    const partyName = ret.partyName || partyQ.trim();
     if (!partyId && !partyName) {
       toast.error("Enter party name");
       partyRef.current?.focus();
@@ -203,6 +251,14 @@ export function ReturnForm({ mode }: Props) {
     if (badLine) {
       toast.error(`Check quantity/price for "${badLine.name}" — qty must be more than 0`);
       return;
+    }
+    // Purchase returns send stock back OUT to the supplier — sale returns bring it back IN
+    if (!isSaleReturn && company.allowNegativeStock === false) {
+      const shortfalls = stockShortfalls(ret.lineItems);
+      if (shortfalls.length) {
+        toast.error(`Not enough stock to return — ${shortfalls.join(", ")}`);
+        return;
+      }
     }
 
     // When this return is linked to an original invoice, cap each item's
@@ -245,48 +301,47 @@ export function ReturnForm({ mode }: Props) {
       }
     }
 
-    savingRef.current = true;
-    setSaving(true);
-
-    // The new party (if any), the return document, and its stock adjustments
-    // must all land together or not at all — a shared batch commits them as
-    // one atomic Firestore write, so a failed commit can't leave an orphaned
-    // party with no corresponding return.
-    const batch = newBatch();
-
-    if (!partyId) {
-      const match = allParties.find((p) => p.name.toLowerCase() === partyName.toLowerCase());
-      if (match) {
-        partyId = match.id;
-        partyName = match.name;
-      } else {
-        const np: Party = {
-          id: genId(),
-          name: partyName,
-          type: "both",
-          openingBalance: 0,
-          createdAt: new Date().toISOString(),
-        };
-        PartyRepo.addBatched(batch, np);
-        partyId = np.id;
-        toast.success(`New party added: ${partyName}`);
-      }
+    if (partyId) {
+      finalizeSave({ id: partyId, name: partyName });
+      return;
     }
-
-    const finalRet: Return = { ...ret, partyId, partyName, createdAt: new Date().toISOString() };
-
-    // Sale Return → items come BACK to stock (+qty)
-    // Purchase Return → items GO BACK to supplier (-qty)
-    const stockDelta = isSaleReturn ? 1 : -1;
-    for (const l of finalRet.lineItems) {
-      const it = ItemRepo.get(l.itemId);
-      if (it) ItemRepo.adjustFieldBatched(batch, it.id, "stock", stockDelta * l.qty);
+    const match = allParties.find((p) => p.name.toLowerCase() === partyName.toLowerCase());
+    if (match) {
+      finalizeSave({ id: match.id, name: match.name });
+      return;
     }
+    // No match — this would previously auto-create a bare-bones party with
+    // just a name recorded. Ask for the real details instead.
+    setQuickAddParty({ name: partyName, phone: "" });
+  };
 
-    repo.addBatched(batch, finalRet as any);
-    commitBatch(batch, `save ${isSaleReturn ? "sale return" : "purchase return"}`);
-    toast.success(`${isSaleReturn ? "Sale Return" : "Purchase Return"} saved`);
-    navigate({ to: backPath });
+  const confirmQuickAddParty = (details: QuickAddPartyDetails) => {
+    if (!quickAddParty) return;
+    const name = details.name.trim() || quickAddParty.name;
+    const phone = details.phone.trim();
+    setQuickAddParty(null);
+    // The name may have been EDITED inside the dialog — re-check so a
+    // same-phone or same-name party (any capitalisation) is reused, never
+    // duplicated. Mirrors InvoiceForm's confirmQuickAddParty.
+    const match =
+      (phone ? allParties.find((p) => (p.phone ?? "").trim() === phone) : undefined) ??
+      allParties.find((p) => p.name.trim().toLowerCase() === name.toLowerCase());
+    if (match) {
+      toast.info(`Using existing party: ${match.name}`);
+      finalizeSave({ id: match.id, name: match.name });
+      return;
+    }
+    const newParty: Party = {
+      id: genId(),
+      name,
+      type: "both",
+      phone: phone || undefined,
+      openingBalance: details.openingBalance || 0,
+      gstin: details.gstin.trim() || undefined,
+      creditLimit: details.creditLimit || undefined,
+      createdAt: new Date().toISOString(),
+    };
+    finalizeSave({ create: newParty });
   };
 
   useEffect(() => {
@@ -361,7 +416,7 @@ export function ReturnForm({ mode }: Props) {
             )}
             {!ret.partyId && partyQ && (
               <span className="text-[11px] text-primary font-medium bg-primary-soft px-2 py-0.5 rounded flex items-center gap-1">
-                <UserPlus className="h-3 w-3" /> Will auto-create on save
+                <UserPlus className="h-3 w-3" /> New party — details asked on save
               </span>
             )}
           </div>
@@ -612,9 +667,25 @@ export function ReturnForm({ mode }: Props) {
             <p className="text-[10px] text-muted-foreground pt-1">
               Stock will be {isSaleReturn ? "increased" : "decreased"} on save
             </p>
+            <button
+              type="button"
+              tabIndex={0}
+              onClick={() => save()}
+              disabled={saving}
+              className="w-full h-10 mt-2 rounded-md bg-primary text-primary-foreground font-bold text-sm hover:opacity-90 transition disabled:opacity-60 flex items-center justify-center gap-2 outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2"
+            >
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              {saving ? "Saving…" : `Save ${isSaleReturn ? "Sale Return" : "Purchase Return"}`}
+            </button>
           </div>
         </div>
       </div>
+      <QuickAddPartyDialog
+        draft={quickAddParty}
+        isSale={isSaleReturn}
+        onCancel={() => setQuickAddParty(null)}
+        onConfirm={confirmQuickAddParty}
+      />
     </div>
   );
 }

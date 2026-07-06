@@ -3,6 +3,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { useEffect, useState } from "react";
 import { SalesRepo, PurchaseRepo } from "@/repositories";
 import { fmtMoney } from "@/lib/format";
+import { FileText } from "lucide-react";
 
 export const Route = createFileRoute("/gst")({ component: GstPage });
 
@@ -43,8 +44,9 @@ function GstPage() {
       <PageHeader
         title="GST"
         subtitle={`Output: ${fmtMoney(outTotal)} · Input: ${fmtMoney(inTotal)} · Payable: ${fmtMoney(outTotal - inTotal)}`}
+        icon={<FileText className="h-5 w-5" />}
       />
-      <div className="p-4 grid grid-cols-2 gap-4 overflow-auto">
+      <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-4 overflow-auto">
         <Section title="GSTR-1 (Sales / Outward)" rows={gstr1} />
         <Section title="GSTR-2 (Purchase / Inward)" rows={gstr2} />
       </div>

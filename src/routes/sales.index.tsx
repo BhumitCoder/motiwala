@@ -1,13 +1,26 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { SalesRepo, PartyRepo, ItemRepo, PaymentRepo } from "@/repositories";
+import { SalesRepo, PartyRepo, ItemRepo, PaymentRepo, BankRepo } from "@/repositories";
 import { newBatch, commitBatch } from "@/repositories/base";
 import type { Invoice } from "@/types";
 import { fmtMoney, fmtDate, ymd, today } from "@/lib/format";
-import { Plus, Search, X, ChevronDown, FileText, Trash2, Pencil } from "lucide-react";
+import {
+  Plus,
+  Search,
+  X,
+  ChevronDown,
+  FileText,
+  Trash2,
+  Pencil,
+  Receipt,
+  CheckCircle2,
+  AlertCircle,
+  type LucideIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 import { usePagination, PaginationBar } from "@/components/Pagination";
 import { fmtMode } from "@/components/ModePills";
+import { PageHeader } from "@/components/PageHeader";
 
 export const Route = createFileRoute("/sales/")({ component: SalesPage });
 
@@ -106,6 +119,11 @@ function SalesPage() {
         });
       }
     }
+    // Undo whatever this sale moved on a specific bank account at billing
+    // time, or that account's balance stays permanently wrong after delete.
+    if (r.paymentMode === "bank" && r.bankId && (r.bankPaidAmount ?? 0) > 0) {
+      BankRepo.adjustFieldBatched(batch, r.bankId, "balance", -r.bankPaidAmount!);
+    }
     SalesRepo.removeBatched(batch, r.id);
     commitBatch(batch, "delete sale");
     refresh();
@@ -121,22 +139,26 @@ function SalesPage() {
 
   return (
     <div className="flex flex-col h-full bg-[#f5f6fa]">
-      {/* Header */}
-      <div className="bg-white border-b px-5 py-3 flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-[17px] font-bold text-gray-800">Sales</h1>
-          <p className="text-[12px] text-gray-400">
-            {filtered.length} of {rows.length} invoices
-          </p>
-        </div>
-        <button
-          onClick={() => navigate({ to: "/sales/new" })}
-          className="inline-flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-semibold hover:opacity-90 transition"
-        >
-          <Plus className="h-4 w-4" /> Add Sale
-          <kbd className="ml-1 text-[10px] bg-white/20 px-1.5 py-0.5 rounded">Ctrl+N</kbd>
-        </button>
-      </div>
+      <PageHeader
+        title="Sales"
+        subtitle={`${filtered.length} of ${rows.length} invoices`}
+        icon={<Receipt className="h-5 w-5" />}
+        iconClassName="bg-success-soft text-success"
+        actions={
+          <>
+            <SalesCard icon={Receipt} label="Total Sale" value={totalAmount} tone="gray" />
+            <SalesCard icon={CheckCircle2} label="Total Paid" value={totalPaid} tone="emerald" />
+            <SalesCard icon={AlertCircle} label="Total Receivable" value={totalBalance} tone="rose" />
+            <button
+              onClick={() => navigate({ to: "/sales/new" })}
+              className="inline-flex items-center gap-1.5 h-8 px-4 bg-primary text-primary-foreground rounded-md text-sm font-semibold hover:opacity-90 transition"
+            >
+              <Plus className="h-4 w-4" /> Add Sale
+              <kbd className="ml-1 text-[10px] bg-white/20 px-1.5 py-0.5 rounded">Ctrl+N</kbd>
+            </button>
+          </>
+        }
+      />
 
       {/* Filters */}
       <div className="bg-white border-b px-5 py-3 flex flex-wrap items-center gap-3">
@@ -216,7 +238,7 @@ function SalesPage() {
             <button
               key={s.value}
               onClick={() => setStatus(s.value)}
-              className={`px-2.5 py-1 rounded text-xs transition ${status === s.value ? "bg-primary text-primary-foreground font-semibold" : "text-gray-500 hover:bg-gray-50"}`}
+              className={`px-2.5 py-1 rounded text-xs transition outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1 ${status === s.value ? "bg-primary text-primary-foreground font-semibold" : "text-gray-500 hover:bg-gray-50"}`}
             >
               {s.label}
             </button>
@@ -247,16 +269,82 @@ function SalesPage() {
         </button>
       </div>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-3 gap-0 bg-white border-b">
-        <SummaryCard label="Total Sale" value={totalAmount} color="text-gray-800" border />
-        <SummaryCard label="Total Paid" value={totalPaid} color="text-emerald-600" border />
-        <SummaryCard label="Total Receivable" value={totalBalance} color="text-rose-600" />
+      {/* Mobile card list — a table of 10 columns doesn't fit a phone;
+          this is the same data as one tappable card per invoice instead. */}
+      <div className="md:hidden flex-1 overflow-auto">
+        {filtered.length === 0 ? (
+          <div className="text-center py-16 text-gray-400">
+            <FileText className="h-10 w-10 mx-auto mb-3 text-gray-200" />
+            <p className="font-medium">No invoices found</p>
+            <p className="text-xs mt-1">Try adjusting filters or add a new sale</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-100">
+            {pg.paged.map((r) => {
+              const balance = Math.round((r.total - r.paid) * 100) / 100;
+              const isPaid = balance <= 0;
+              const isUnpaid = r.paid === 0 && r.total > 0;
+              const isPartial = r.paid > 0 && balance > 0;
+              return (
+                <div
+                  key={r.id}
+                  onClick={() => navigate({ to: "/sales/$id", params: { id: r.id } })}
+                  className="bg-white p-4 active:bg-gray-50"
+                >
+                  <div className="flex items-start justify-between gap-3 mb-1.5">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-gray-800 truncate">{r.partyName}</p>
+                      <p className="text-xs text-gray-400 font-mono mt-0.5">
+                        {r.number} · {fmtDate(r.date)}
+                      </p>
+                    </div>
+                    <p className="font-bold text-gray-800 tabular-nums shrink-0">
+                      {fmtMoney(r.total)}
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <StatusBadge paid={isPaid} partial={isPartial} unpaid={isUnpaid} />
+                      <span className="text-[11px] text-gray-400">{fmtMode(r.paymentMode)}</span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      {balance > 0 && (
+                        <span className="text-xs font-semibold text-rose-600 mr-1">
+                          Due {fmtMoney(balance)}
+                        </span>
+                      )}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigate({ to: "/sales/edit/$id", params: { id: r.id } });
+                        }}
+                        className="p-1.5 rounded hover:bg-blue-50 text-gray-400 hover:text-blue-600 transition"
+                        title="Edit invoice"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDelete(r);
+                        }}
+                        className="p-1.5 rounded hover:bg-rose-50 text-gray-400 hover:text-rose-500 transition"
+                        title="Delete invoice"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
-      {/* Table */}
-      <div className="flex-1 overflow-auto">
-        <table className="w-full text-[13px] border-collapse">
+      {/* Table (desktop) */}
+      <div className="hidden md:block flex-1 overflow-auto">
+        <table className="w-full min-w-[960px] text-[13px] border-collapse">
           <thead className="sticky top-0 bg-white border-b z-10">
             <tr>
               <Th>Invoice #</Th>
@@ -323,7 +411,7 @@ function SalesPage() {
                           e.stopPropagation();
                           navigate({ to: "/sales/edit/$id", params: { id: r.id } });
                         }}
-                        className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-blue-50 text-gray-400 hover:text-blue-600 transition"
+                        className="p-1 rounded hover:bg-blue-50 text-gray-400 hover:text-blue-600 transition"
                         title="Edit invoice"
                       >
                         <Pencil className="h-3.5 w-3.5" />
@@ -333,7 +421,7 @@ function SalesPage() {
                           e.stopPropagation();
                           handleDelete(r);
                         }}
-                        className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-rose-50 text-gray-400 hover:text-rose-500 transition"
+                        className="p-1 rounded hover:bg-rose-50 text-gray-400 hover:text-rose-500 transition"
                         title="Delete invoice"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
@@ -380,21 +468,37 @@ function SalesPage() {
   );
 }
 
-function SummaryCard({
+const SALES_TONES = {
+  gray: { bg: "bg-gray-100", text: "text-gray-700" },
+  emerald: { bg: "bg-emerald-50", text: "text-emerald-600" },
+  rose: { bg: "bg-rose-50", text: "text-rose-600" },
+} as const;
+
+function SalesCard({
+  icon: Icon,
   label,
   value,
-  color,
-  border,
+  tone,
 }: {
+  icon: LucideIcon;
   label: string;
   value: number;
-  color: string;
-  border?: boolean;
+  tone: keyof typeof SALES_TONES;
 }) {
+  const t = SALES_TONES[tone];
   return (
-    <div className={`px-5 py-3.5 ${border ? "border-r border-gray-100" : ""}`}>
-      <p className="text-[11px] text-gray-400 font-medium uppercase tracking-wide mb-1">{label}</p>
-      <p className={`text-[20px] font-bold tabular-nums ${color}`}>{fmtMoney(value)}</p>
+    <div className="shrink-0 flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border border-gray-100 bg-white">
+      <div className={`h-8 w-8 rounded-md flex items-center justify-center shrink-0 ${t.bg} ${t.text}`}>
+        <Icon className="h-4 w-4" />
+      </div>
+      <div className="min-w-0">
+        <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wide mb-0.5 whitespace-nowrap">
+          {label}
+        </p>
+        <p className={`text-[14px] font-bold tabular-nums whitespace-nowrap ${t.text}`}>
+          {fmtMoney(value)}
+        </p>
+      </div>
     </div>
   );
 }

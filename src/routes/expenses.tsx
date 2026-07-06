@@ -10,7 +10,7 @@ import { Field } from "@/components/Field";
 import { NumField } from "@/components/NumInput";
 import { ModePills, fmtMode } from "@/components/ModePills";
 import { fmtMoney, fmtDate, today } from "@/lib/format";
-import { Plus } from "lucide-react";
+import { Plus, Receipt } from "lucide-react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/expenses")({ component: ExpensesPage });
@@ -55,6 +55,8 @@ function ExpensesPage() {
       <PageHeader
         title="Expenses"
         subtitle={`${rows.length} entries · ${fmtMoney(total)} total`}
+        icon={<Receipt className="h-5 w-5" />}
+        iconClassName="bg-warning-soft text-warning"
         actions={
           <Button
             size="sm"
@@ -141,7 +143,7 @@ function ExpenseDialog({
         <DialogHeader>
           <DialogTitle>{expense ? "Edit Expense" : "New Expense"}</DialogTitle>
         </DialogHeader>
-        <form onSubmit={save} className="grid grid-cols-2 gap-3">
+        <form onSubmit={save} className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Field
             ref={firstRef}
             label="Category *"
