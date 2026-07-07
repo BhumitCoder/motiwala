@@ -244,7 +244,7 @@ function SalesPage() {
             <button
               key={s.value}
               onClick={() => setStatus(s.value)}
-              className={`px-2.5 py-1 rounded text-xs transition outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1 ${status === s.value ? "bg-primary text-primary-foreground font-semibold" : "text-gray-500 hover:bg-gray-50"}`}
+              className={`px-2.5 py-1 rounded text-xs transition outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 ${status === s.value ? "bg-primary text-primary-foreground font-semibold" : "text-gray-500 hover:bg-gray-50"}`}
             >
               {s.label}
             </button>

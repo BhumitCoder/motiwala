@@ -667,16 +667,6 @@ export function ReturnForm({ mode }: Props) {
             <p className="text-[10px] text-muted-foreground pt-1">
               Stock will be {isSaleReturn ? "increased" : "decreased"} on save
             </p>
-            <button
-              type="button"
-              tabIndex={0}
-              onClick={() => save()}
-              disabled={saving}
-              className="w-full h-10 mt-2 rounded-md bg-primary text-primary-foreground font-bold text-sm hover:opacity-90 transition disabled:opacity-60 flex items-center justify-center gap-2 outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2"
-            >
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              {saving ? "Saving…" : `Save ${isSaleReturn ? "Sale Return" : "Purchase Return"}`}
-            </button>
           </div>
         </div>
       </div>

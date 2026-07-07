@@ -142,6 +142,39 @@ export function InvoiceForm({ mode, existing }: Props) {
   const numberRef = useRef<HTMLInputElement>(null);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
+  const bankSelectRef = useRef<HTMLInputElement>(null);
+  const prevPaymentMode = useRef(inv.paymentMode);
+  useEffect(() => {
+    // Only jump focus on an actual switch to "bank" — not on mount, or an
+    // already-bank invoice would steal focus away from wherever the cashier
+    // is when opening it for edit.
+    if (inv.paymentMode === "bank" && prevPaymentMode.current !== "bank") {
+      bankSelectRef.current?.focus();
+    }
+    prevPaymentMode.current = inv.paymentMode;
+  }, [inv.paymentMode]);
+
+  // Search-as-you-type for Bank Account — same combobox pattern as the
+  // party picker above, since a shop can have many accounts and a plain
+  // dropdown makes them scroll-hunt for one.
+  const [bankQ, setBankQ] = useState("");
+  const [bankOpen, setBankOpen] = useState(false);
+  const [bankIdx, setBankIdx] = useState(0);
+  useEffect(() => {
+    setBankQ(banks.find((b) => b.id === inv.bankId)?.name ?? "");
+  }, [inv.bankId, banks]);
+  const bankSuggests = useMemo(() => {
+    const q = bankQ.trim().toLowerCase();
+    if (!q) return banks;
+    return banks.filter(
+      (b) => b.name.toLowerCase().includes(q) || (b.accountNumber ?? "").toLowerCase().includes(q),
+    );
+  }, [banks, bankQ]);
+  const selectBank = (b: BankAccount) => {
+    setInv({ ...inv, bankId: b.id });
+    setBankQ(b.name);
+    setBankOpen(false);
+  };
 
   // Live outstanding balance of the selected party (credit decision at the counter)
   const partyBalance = useMemo(() => {
@@ -1060,21 +1093,56 @@ export function InvoiceForm({ mode, existing }: Props) {
                 />
               </div>
               {inv.paymentMode === "bank" && (
-                <div className="flex flex-col gap-1.5">
+                <div className="relative flex flex-col gap-1.5">
                   <span className="text-muted-foreground text-[12px]">Bank Account *</span>
-                  <select
-                    value={inv.bankId ?? ""}
-                    onChange={(e) => setInv({ ...inv, bankId: e.target.value || undefined })}
-                    className="h-9 px-2 border rounded-md bg-background focus:border-primary focus:ring-2 focus:ring-ring/20 outline-none text-[13px]"
-                  >
-                    <option value="">Select bank account…</option>
-                    {banks.map((b) => (
-                      <option key={b.id} value={b.id}>
-                        {b.name}
-                        {b.accountNumber ? ` — ${b.accountNumber}` : ""}
-                      </option>
-                    ))}
-                  </select>
+                  <input
+                    ref={bankSelectRef}
+                    value={bankQ}
+                    onChange={(e) => {
+                      setBankQ(e.target.value);
+                      setBankOpen(true);
+                      setBankIdx(0);
+                      if (inv.bankId) setInv({ ...inv, bankId: undefined });
+                    }}
+                    onFocus={() => setBankOpen(true)}
+                    onBlur={() => setTimeout(() => setBankOpen(false), 150)}
+                    onKeyDown={(e) => {
+                      if (e.key === "ArrowDown") {
+                        e.preventDefault();
+                        setBankIdx((i) => Math.min(bankSuggests.length - 1, i + 1));
+                      } else if (e.key === "ArrowUp") {
+                        e.preventDefault();
+                        setBankIdx((i) => Math.max(0, i - 1));
+                      } else if (e.key === "Enter") {
+                        e.preventDefault();
+                        if (bankSuggests[bankIdx]) selectBank(bankSuggests[bankIdx]);
+                      }
+                    }}
+                    placeholder="Search bank account…"
+                    className="h-9 px-3 border rounded-md bg-background focus:border-primary focus:ring-2 focus:ring-ring/20 outline-none text-[13px]"
+                  />
+                  {bankOpen && bankSuggests.length > 0 && (
+                    <div className="absolute z-20 top-full left-0 right-0 mt-1 border rounded-md bg-popover shadow-elevated max-h-56 overflow-auto">
+                      {bankSuggests.map((b, i) => (
+                        <div
+                          key={b.id}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            selectBank(b);
+                          }}
+                          className={`px-3 py-2 text-sm cursor-pointer ${i === bankIdx ? "bg-accent" : "hover:bg-accent"}`}
+                        >
+                          {b.name}
+                          {b.accountNumber ? ` — ${b.accountNumber}` : ""}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {bankOpen && bankQ && bankSuggests.length === 0 && (
+                    <div className="absolute z-20 top-full left-0 right-0 mt-1 border rounded-md bg-popover shadow-elevated px-3 py-2 text-xs text-muted-foreground">
+                      No matching bank account
+                    </div>
+                  )}
                   {banks.length === 0 && (
                     <p className="text-[11px] text-amber-600">
                       No bank accounts set up yet — add one from Bank Accounts first.
@@ -1116,22 +1184,6 @@ export function InvoiceForm({ mode, existing }: Props) {
                   {fmtMoney(Math.max(0, inv.total - inv.paid))}
                 </span>
               </div>
-              {/* End of the Tab journey: Save right where the cashier finishes
-                  typing — explicit tabindex so macOS Safari can Tab to it */}
-              <button
-                type="button"
-                tabIndex={0}
-                onClick={() => save()}
-                disabled={saving}
-                className="w-full h-10 mt-3 rounded-md bg-primary text-primary-foreground font-bold text-sm hover:opacity-90 transition disabled:opacity-60 flex items-center justify-center gap-2 outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2"
-              >
-                {saving ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Save className="h-4 w-4" />
-                )}
-                {saving ? "Saving…" : `Save ${isSale ? "Sale" : "Purchase"}`}
-              </button>
             </div>
           </div>
 

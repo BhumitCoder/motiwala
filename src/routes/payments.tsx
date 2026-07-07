@@ -401,6 +401,9 @@ function ReceivePaymentDialog({
   const [mode, setMode] = useState<PaymentMode>("cash");
   const [banks, setBanks] = useState<BankAccount[]>([]);
   const [bankId, setBankId] = useState("");
+  const [bankQ, setBankQ] = useState("");
+  const [bankOpen, setBankOpen] = useState(false);
+  const [bankIdx, setBankIdx] = useState(0);
   const [applyRows, setApplyRows] = useState<ApplyRow[]>([]);
   const [manualAmount, setManualAmount] = useState("");
   const [saving, setSaving] = useState(false);
@@ -409,6 +412,19 @@ function ReceivePaymentDialog({
   const suggests = partyQ.trim()
     ? allParties.filter((p) => p.name.toLowerCase().includes(partyQ.toLowerCase())).slice(0, 6)
     : [];
+
+  const bankSuggests = bankQ.trim()
+    ? banks.filter(
+        (b) =>
+          b.name.toLowerCase().includes(bankQ.toLowerCase()) ||
+          (b.accountNumber ?? "").toLowerCase().includes(bankQ.toLowerCase()),
+      )
+    : banks;
+  const selectBank = (b: BankAccount) => {
+    setBankId(b.id);
+    setBankQ(b.name);
+    setBankOpen(false);
+  };
 
   // Reset (or prefill when editing) on open
   useEffect(() => {
@@ -421,6 +437,7 @@ function ReceivePaymentDialog({
         setDate(editing.date);
         setMode(editing.mode);
         setBankId(editing.bankId ?? "");
+        setBankQ(BankRepo.all().find((b) => b.id === editing.bankId)?.name ?? "");
         setManualAmount(editing.allocations?.length ? "" : String(editing.amount));
       } else {
         setPartyQ("");
@@ -428,6 +445,7 @@ function ReceivePaymentDialog({
         setDate(today());
         setMode("cash");
         setBankId("");
+        setBankQ("");
         setManualAmount("");
         setTimeout(() => partyRef.current?.focus(), 60);
       }
@@ -922,7 +940,10 @@ function ReceivePaymentDialog({
                   value={mode}
                   onChange={(m) => {
                     setMode(m);
-                    if (m !== "bank") setBankId("");
+                    if (m !== "bank") {
+                      setBankId("");
+                      setBankQ("");
+                    }
                   }}
                   modes={["cash", "bank"]}
                 />
@@ -931,21 +952,55 @@ function ReceivePaymentDialog({
           </div>
 
           {mode === "bank" && (
-            <div className="flex flex-col gap-1 text-[12px]">
+            <div className="relative flex flex-col gap-1 text-[12px]">
               <label className="font-semibold text-gray-600">Bank Account *</label>
-              <select
-                value={bankId}
-                onChange={(e) => setBankId(e.target.value)}
+              <input
+                value={bankQ}
+                onChange={(e) => {
+                  setBankQ(e.target.value);
+                  setBankOpen(true);
+                  setBankIdx(0);
+                  if (bankId) setBankId("");
+                }}
+                onFocus={() => setBankOpen(true)}
+                onBlur={() => setTimeout(() => setBankOpen(false), 150)}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setBankIdx((i) => Math.min(bankSuggests.length - 1, i + 1));
+                  } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setBankIdx((i) => Math.max(0, i - 1));
+                  } else if (e.key === "Enter") {
+                    e.preventDefault();
+                    if (bankSuggests[bankIdx]) selectBank(bankSuggests[bankIdx]);
+                  }
+                }}
+                placeholder="Search bank account…"
                 className="h-9 px-2 border rounded-md bg-white focus:border-primary outline-none text-sm"
-              >
-                <option value="">Select bank account…</option>
-                {banks.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.name}
-                    {b.accountNumber ? ` — ${b.accountNumber}` : ""} ({fmtMoney(b.balance)})
-                  </option>
-                ))}
-              </select>
+              />
+              {bankOpen && bankSuggests.length > 0 && (
+                <div className="absolute z-20 top-full left-0 right-0 mt-1 border rounded-md bg-popover shadow-lg max-h-40 overflow-auto">
+                  {bankSuggests.map((b, i) => (
+                    <div
+                      key={b.id}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        selectBank(b);
+                      }}
+                      className={`px-3 py-2 text-sm cursor-pointer ${i === bankIdx ? "bg-accent" : "hover:bg-accent"}`}
+                    >
+                      {b.name}
+                      {b.accountNumber ? ` — ${b.accountNumber}` : ""} ({fmtMoney(b.balance)})
+                    </div>
+                  ))}
+                </div>
+              )}
+              {bankOpen && bankQ && bankSuggests.length === 0 && (
+                <div className="absolute z-20 top-full left-0 right-0 mt-1 border rounded-md bg-popover shadow-lg px-3 py-2 text-xs text-muted-foreground">
+                  No matching bank account
+                </div>
+              )}
               {banks.length === 0 && (
                 <p className="text-[11px] text-amber-600">
                   No bank accounts set up yet — add one from Bank Accounts first.
