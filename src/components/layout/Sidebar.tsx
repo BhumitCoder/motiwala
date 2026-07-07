@@ -141,7 +141,7 @@ export function Sidebar() {
           {!collapsed && (
             <div className="flex flex-col leading-tight overflow-hidden">
               <span className="font-bold tracking-tight text-[15px] text-sidebar-foreground">
-                AIM
+                OM
               </span>
               <span className="text-[10px] uppercase tracking-widest text-sidebar-muted">
                 Billing · Inventory
@@ -216,7 +216,7 @@ export function Sidebar() {
         {/* Logout — mobile drawer only; desktop keeps it in the Topbar */}
         <button
           onClick={async () => {
-            if (!confirm("Logout from AIM?")) return;
+            if (!confirm("Logout from OM?")) return;
             try {
               stopRepos();
               await signOut(auth);

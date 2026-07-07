@@ -65,12 +65,12 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "AIM — Billing & Inventory ERP" },
+      { title: "OM — Billing & Inventory ERP" },
       {
         name: "description",
         content: "Keyboard-first desktop billing, inventory, and accounting software.",
       },
-      { property: "og:title", content: "AIM — Billing & Inventory ERP" },
+      { property: "og:title", content: "OM — Billing & Inventory ERP" },
       {
         property: "og:description",
         content: "Keyboard-first desktop billing, inventory, and accounting software.",
@@ -237,7 +237,7 @@ function SplashScreen() {
         <Sparkles className="h-6 w-6" />
       </div>
       <div className="text-center">
-        <p className="font-bold tracking-tight text-[18px]">AIM</p>
+        <p className="font-bold tracking-tight text-[18px]">OM</p>
         <p className="text-[12px] text-muted-foreground flex items-center gap-1.5 justify-center mt-1">
           <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading your workspace…
         </p>

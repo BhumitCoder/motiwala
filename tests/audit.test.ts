@@ -1,5 +1,5 @@
 /**
- * AIM production audit harness.
+ * OM production audit harness.
  * Imports the REAL calculation library (src/lib/ledger.ts) and hammers it
  * with randomized business scenarios ("monkey testing"), asserting the
  * accounting invariants that must never break.
