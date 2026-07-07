@@ -1,10 +1,10 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { SalesRepo, CompanyRepo } from "@/repositories";
 import type { Invoice, Company, PrintFormat } from "@/types";
 import { fmtMoney } from "@/lib/format";
-import { waLink, billMessage } from "@/lib/whatsapp";
 import { printWithName } from "@/lib/print";
+import { downloadElementAsPdf, shareElementAsPdf } from "@/lib/pdf";
 import { fmtMode } from "@/components/ModePills";
 import { ThermalReceipt } from "@/components/ThermalReceipt";
 import { PrintableInvoice } from "@/components/PrintableInvoice";
@@ -15,7 +15,8 @@ import {
   Check,
   AlertCircle,
   Pencil,
-  MessageCircle,
+  FileDown,
+  Share2,
   Receipt,
 } from "lucide-react";
 
@@ -42,6 +43,8 @@ function InvoiceDetailPage() {
   const [inv, setInv] = useState<Invoice | null>(null);
   const [co, setCo] = useState<Company | null>(null);
   const [fmt, setFmt] = useState<PrintFormat>("a4");
+  const [pdfBusy, setPdfBusy] = useState<"download" | "share" | null>(null);
+  const printRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setInv(SalesRepo.get(id) ?? null);
@@ -63,14 +66,36 @@ function InvoiceDetailPage() {
     if (co) CompanyRepo.save({ ...co, printFormat: f }); // remember for next time
   };
 
-  const shareWhatsApp = () => {
-    if (!inv || !co) return;
-    const link = waLink(inv.partyPhone, billMessage(inv, co));
-    if (!link) {
-      toast.error("No phone number saved for this customer");
-      return;
+  const handleDownloadPdf = async () => {
+    if (!inv || !printRef.current || pdfBusy) return;
+    setPdfBusy("download");
+    try {
+      await downloadElementAsPdf(printRef.current, inv.number, fmt === "a4-2up" ? "landscape" : "portrait");
+      toast.success("Invoice downloaded as PDF");
+    } catch {
+      toast.error("Could not generate PDF — try Print instead");
+    } finally {
+      setPdfBusy(null);
     }
-    window.open(link, "_blank");
+  };
+
+  const handleShare = async () => {
+    if (!inv || !printRef.current || pdfBusy) return;
+    setPdfBusy("share");
+    try {
+      const result = await shareElementAsPdf(
+        printRef.current,
+        inv.number,
+        fmt === "a4-2up" ? "landscape" : "portrait",
+      );
+      if (result === "shared") toast.success("Invoice shared");
+      else if (result === "downloaded")
+        toast.info("Sharing isn't supported here — PDF downloaded instead");
+    } catch {
+      toast.error("Could not share invoice — try Download PDF instead");
+    } finally {
+      setPdfBusy(null);
+    }
   };
 
   if (!inv) {
@@ -143,33 +168,39 @@ function InvoiceDetailPage() {
             <Pencil className="h-4 w-4" /> Edit
           </button>
           <button
-            onClick={shareWhatsApp}
-            className="inline-flex items-center gap-1.5 h-8 px-4 bg-emerald-600 text-white rounded-md text-sm font-semibold hover:bg-emerald-700 transition"
-            title={
-              inv.partyPhone
-                ? `Send bill to ${inv.partyPhone}`
-                : "No phone number saved for this customer"
-            }
+            onClick={handleDownloadPdf}
+            disabled={pdfBusy !== null}
+            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50"
+            title="Download invoice as PDF"
           >
-            <MessageCircle className="h-4 w-4" /> WhatsApp
+            <FileDown className="h-4 w-4" />
+          </button>
+          <button
+            onClick={handleShare}
+            disabled={pdfBusy !== null}
+            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50"
+            title="Share invoice PDF"
+          >
+            <Share2 className="h-4 w-4" />
           </button>
           <button
             onClick={() => printWithName(inv.number)}
             className="inline-flex items-center gap-1.5 h-8 px-4 bg-primary text-white rounded-md text-sm font-semibold hover:opacity-90 transition"
-            title="Print, or choose 'Save as PDF' in the print dialog"
+            title="Print"
           >
-            <Printer className="h-4 w-4" /> Print / PDF
+            <Printer className="h-4 w-4" /> Print
           </button>
         </div>
       </div>
 
       <div className="flex-1 overflow-auto py-6 px-4 flex justify-center bg-gray-100">
         {(fmt === "thermal80" || fmt === "thermal58") && co ? (
-          <div className="bg-white shadow-lg p-5 h-fit rounded-sm">
+          <div ref={printRef} className="bg-white shadow-lg p-5 h-fit rounded-sm">
             <ThermalReceipt inv={inv} company={co} width={fmt === "thermal80" ? 80 : 58} />
           </div>
         ) : fmt === "a4-2up" && co ? (
           <div
+            ref={printRef}
             className="print-visible a4-2up-sheet bg-white w-full max-w-[1120px] shadow-lg print:shadow-none print:m-0 p-6"
             style={{ minHeight: "793px" }}
           >
@@ -195,6 +226,7 @@ function InvoiceDetailPage() {
         ) : (
           co && (
             <div
+              ref={printRef}
               id="print-invoice"
               className="bg-white w-full max-w-[794px] shadow-lg print:shadow-none print:m-0 p-6"
               style={{ minHeight: "1123px" }}

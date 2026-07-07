@@ -1,12 +1,23 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PurchaseRepo, CompanyRepo } from "@/repositories";
 import type { Invoice, Company } from "@/types";
 import { fmtMoney } from "@/lib/format";
 import { printWithName } from "@/lib/print";
+import { downloadElementAsPdf, shareElementAsPdf } from "@/lib/pdf";
 import { fmtMode } from "@/components/ModePills";
 import { PrintableInvoice } from "@/components/PrintableInvoice";
-import { ArrowLeft, Printer, Check, AlertCircle, Pencil, FileText } from "lucide-react";
+import { toast } from "sonner";
+import {
+  ArrowLeft,
+  Printer,
+  Check,
+  AlertCircle,
+  Pencil,
+  FileText,
+  FileDown,
+  Share2,
+} from "lucide-react";
 
 export const Route = createFileRoute("/purchase/$id")({
   component: BillDetailPage,
@@ -23,6 +34,8 @@ function BillDetailPage() {
   const navigate = useNavigate();
   const [inv, setInv] = useState<Invoice | null>(null);
   const [co, setCo] = useState<Company | null>(null);
+  const [pdfBusy, setPdfBusy] = useState<"download" | "share" | null>(null);
+  const printRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setInv(PurchaseRepo.get(id) ?? null);
@@ -36,6 +49,34 @@ function BillDetailPage() {
       return () => clearTimeout(t);
     }
   }, [print, inv]);
+
+  const handleDownloadPdf = async () => {
+    if (!inv || !printRef.current || pdfBusy) return;
+    setPdfBusy("download");
+    try {
+      await downloadElementAsPdf(printRef.current, inv.number, "portrait");
+      toast.success("Bill downloaded as PDF");
+    } catch {
+      toast.error("Could not generate PDF — try Print instead");
+    } finally {
+      setPdfBusy(null);
+    }
+  };
+
+  const handleShare = async () => {
+    if (!inv || !printRef.current || pdfBusy) return;
+    setPdfBusy("share");
+    try {
+      const result = await shareElementAsPdf(printRef.current, inv.number, "portrait");
+      if (result === "shared") toast.success("Bill shared");
+      else if (result === "downloaded")
+        toast.info("Sharing isn't supported here — PDF downloaded instead");
+    } catch {
+      toast.error("Could not share bill — try Download PDF instead");
+    } finally {
+      setPdfBusy(null);
+    }
+  };
 
   if (!inv) {
     return (
@@ -95,11 +136,27 @@ function BillDetailPage() {
             <Pencil className="h-4 w-4" /> Edit
           </button>
           <button
+            onClick={handleDownloadPdf}
+            disabled={pdfBusy !== null}
+            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50"
+            title="Download bill as PDF"
+          >
+            <FileDown className="h-4 w-4" />
+          </button>
+          <button
+            onClick={handleShare}
+            disabled={pdfBusy !== null}
+            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50"
+            title="Share bill PDF"
+          >
+            <Share2 className="h-4 w-4" />
+          </button>
+          <button
             onClick={() => printWithName(inv.number)}
             className="inline-flex items-center gap-1.5 h-8 px-4 bg-primary text-white rounded-md text-sm font-semibold hover:opacity-90 transition"
-            title="Print, or choose 'Save as PDF' in the print dialog"
+            title="Print"
           >
-            <Printer className="h-4 w-4" /> Print / PDF
+            <Printer className="h-4 w-4" /> Print
           </button>
         </div>
       </div>
@@ -107,6 +164,7 @@ function BillDetailPage() {
       <div className="flex-1 overflow-auto py-6 px-4 flex justify-center bg-gray-100">
         {co && (
           <div
+            ref={printRef}
             className="bg-white w-full max-w-[794px] shadow-lg print:shadow-none print:m-0 p-6"
             style={{ minHeight: "1123px" }}
           >

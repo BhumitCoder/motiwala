@@ -3,7 +3,7 @@ import { getAuth, type Auth } from "firebase/auth";
 import {
   initializeFirestore,
   persistentLocalCache,
-  persistentMultipleTabManager,
+  persistentSingleTabManager,
   type Firestore,
 } from "firebase/firestore";
 
@@ -33,9 +33,17 @@ if (isBrowser) {
   authInstance = getAuth(app);
   // Offline-first: writes queue locally and sync when internet returns,
   // reads keep working from the persistent cache — important for a shop counter.
+  //
+  // Single-tab manager, not multi-tab: the app already has its own in-app
+  // tab bar inside one browser tab, so real cross-browser-tab sync buys
+  // nothing here. Multi-tab mode's cross-tab IndexedDB lease/lock
+  // coordination is a well-known source of hangs on Safari/macOS (WebKit's
+  // stricter IndexedDB behavior + background-tab throttling can stall the
+  // lease handoff) — single-tab persistence keeps the same offline-cache
+  // benefit without that cross-tab coordination surface.
   dbInstance = initializeFirestore(
     app,
-    { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) },
+    { localCache: persistentLocalCache({ tabManager: persistentSingleTabManager(undefined) }) },
     DATABASE_ID,
   );
 }

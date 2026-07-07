@@ -93,6 +93,12 @@ function PurchasePage() {
     setStatus("all");
     setSearch("");
   };
+  const filtersActive =
+    dateFrom !== monthStart() ||
+    dateTo !== today() ||
+    partyId !== "all" ||
+    status !== "all" ||
+    search !== "";
 
   const handleDelete = (r: Invoice) => {
     if (
@@ -262,12 +268,14 @@ function PurchasePage() {
           )}
         </div>
 
-        <button
-          onClick={clearFilters}
-          className="text-xs text-gray-400 hover:text-gray-600 transition flex items-center gap-1"
-        >
-          <X className="h-3 w-3" /> Clear
-        </button>
+        {filtersActive && (
+          <button
+            onClick={clearFilters}
+            className="text-xs text-gray-400 hover:text-gray-600 transition flex items-center gap-1"
+          >
+            <X className="h-3 w-3" /> Clear
+          </button>
+        )}
       </div>
 
       {/* Table */}

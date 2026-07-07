@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -8,21 +8,20 @@ import { cn } from "@/lib/utils";
  *  - select-all on focus so typing replaces the old value instantly
  *  - accepts only digits and one decimal point while typing ("0.5" works)
  */
-export function NumInput({
-  value,
-  onValue,
-  className,
-  placeholder = "0",
-  allowNegative = false,
-  ...rest
-}: {
-  value: number;
-  onValue: (n: number) => void;
-  className?: string;
-  placeholder?: string;
-  /** Allow a leading minus (e.g. opening balance "you owe them") */
-  allowNegative?: boolean;
-} & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "type">) {
+export const NumInput = forwardRef<
+  HTMLInputElement,
+  {
+    value: number;
+    onValue: (n: number) => void;
+    className?: string;
+    placeholder?: string;
+    /** Allow a leading minus (e.g. opening balance "you owe them") */
+    allowNegative?: boolean;
+  } & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "type">
+>(function NumInput(
+  { value, onValue, className, placeholder = "0", allowNegative = false, ...rest },
+  ref,
+) {
   const [text, setText] = useState(value === 0 ? "" : String(value));
   const lastNum = useRef(value);
 
@@ -41,6 +40,7 @@ export function NumInput({
 
   return (
     <input
+      ref={ref}
       type="text"
       inputMode="decimal"
       value={text}
@@ -54,12 +54,15 @@ export function NumInput({
         lastNum.current = isNaN(n) ? 0 : n;
         onValue(lastNum.current);
       }}
-      onFocus={(e) => e.target.select()}
       className={className}
       {...rest}
+      onFocus={(e) => {
+        e.target.select();
+        rest.onFocus?.(e);
+      }}
     />
   );
-}
+});
 
 /** Labeled NumInput styled like the app's Field component — for dialog forms. */
 export function NumField({

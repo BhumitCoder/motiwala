@@ -11,6 +11,7 @@ import { Field } from "@/components/Field";
 import { NumField } from "@/components/NumInput";
 import { fmtMoney, today } from "@/lib/format";
 import { downloadCsv, parseCsv } from "@/lib/csv";
+import * as XLSX from "xlsx";
 import {
   Plus,
   Search,
@@ -20,6 +21,7 @@ import {
   Download,
   Upload,
   Package,
+  AlertTriangle,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -257,32 +259,32 @@ function ItemsPage() {
           </>
         }
       />
-      {(filtered.length > 0 || selectedIds.size > 0) && (
-        <div className="px-5 py-2 border-b bg-white flex items-center gap-3 flex-wrap">
-          {filtered.length > 0 && (
-            <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={allFilteredSelected}
-                onChange={toggleAllFiltered}
-                className="accent-primary"
-              />
-              Select all
-            </label>
-          )}
-          {selectedIds.size > 0 && (
-            <div className="flex items-center gap-2 ml-auto">
-              <span className="text-xs font-medium text-muted-foreground">
-                {selectedIds.size} selected
-              </span>
-              <Button size="sm" variant="outline" onClick={() => setBulkEditOpen(true)}>
-                <Pencil className="h-3.5 w-3.5" /> Bulk Edit
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>
-                Clear
-              </Button>
-            </div>
-          )}
+      {/* Stays out of the way until the cashier actually selects something —
+          then a single highlighted action bar appears with Select-all,
+          count, and bulk actions together, instead of an empty bar sitting
+          under the header all the time. */}
+      {selectedIds.size > 0 && (
+        <div className="px-5 py-2 border-b bg-primary-soft flex items-center gap-3 flex-wrap">
+          <label className="flex items-center gap-1.5 text-xs font-medium text-primary cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={allFilteredSelected}
+              onChange={toggleAllFiltered}
+              className="accent-primary"
+            />
+            Select all {filtered.length}
+          </label>
+          <span className="text-xs font-semibold text-foreground">
+            {selectedIds.size} selected
+          </span>
+          <div className="flex items-center gap-2 ml-auto">
+            <Button size="sm" variant="outline" onClick={() => setBulkEditOpen(true)}>
+              <Pencil className="h-3.5 w-3.5" /> Bulk Edit
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>
+              Clear
+            </Button>
+          </div>
         </div>
       )}
       <div className="p-3 flex-1 min-h-0 flex">
@@ -637,6 +639,7 @@ export function ItemDialog({
   const firstRef = useRef<HTMLInputElement>(null);
   const [f, setF] = useState<Partial<Item>>({});
   const [saving, setSaving] = useState(false);
+  const [nameOpen, setNameOpen] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -651,6 +654,7 @@ export function ItemDialog({
         },
       );
       setSaving(false);
+      setNameOpen(false);
       setTimeout(() => firstRef.current?.focus(), 50);
     }
   }, [open, item]);
@@ -704,6 +708,16 @@ export function ItemDialog({
     onOpenChange(false);
   };
 
+  // Live "does this already exist?" hint — the exact-match case is hard
+  // blocked on save, but a near-match (extra word, different spacing) isn't
+  // an error, just something the client asked to be warned about before
+  // they commit to a possible duplicate.
+  const nameQ = (f.name ?? "").trim().toLowerCase();
+  const similarItemsAll = nameQ
+    ? ItemRepo.all().filter((x) => x.id !== item?.id && x.name.trim().toLowerCase().includes(nameQ))
+    : [];
+  const similarItems = similarItemsAll.slice(0, 5);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl">
@@ -711,13 +725,42 @@ export function ItemDialog({
           <DialogTitle>{item ? "Edit Item" : "New Item"}</DialogTitle>
         </DialogHeader>
         <form onSubmit={save} className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div className="col-span-2">
+          <div className="col-span-2 relative">
             <Field
               ref={firstRef}
               label="Name *"
               value={f.name ?? ""}
-              onChange={(e) => setF({ ...f, name: e.target.value })}
+              onChange={(e) => {
+                setF({ ...f, name: e.target.value });
+                setNameOpen(true);
+              }}
+              onFocus={() => setNameOpen(true)}
+              onBlur={() => setTimeout(() => setNameOpen(false), 150)}
+              autoComplete="off"
             />
+            {nameOpen && similarItems.length > 0 && (
+              <div className="absolute z-30 top-full left-0 right-0 mt-1 border rounded-md bg-popover shadow-elevated max-h-52 overflow-auto">
+                <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-amber-600 bg-amber-50 border-b flex items-center gap-1.5">
+                  <AlertTriangle className="h-3 w-3" />
+                  {similarItemsAll.length === 1 ? "Similar item exists" : "Similar items exist"} —
+                  check before saving
+                </div>
+                {similarItems.map((x) => (
+                  <div key={x.id} className="px-3 py-2 text-sm flex items-center justify-between">
+                    <span className="font-medium">{x.name}</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      Stock: {x.stock} {x.unit}
+                    </span>
+                  </div>
+                ))}
+                {similarItemsAll.length > similarItems.length && (
+                  <div className="px-3 py-1.5 text-[11px] text-muted-foreground border-t">
+                    +{similarItemsAll.length - similarItems.length} more match
+                    {similarItemsAll.length - similarItems.length > 1 ? "es" : ""}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           <Field
             label="Category"
@@ -803,11 +846,11 @@ function normalizeHeader(h: string): string {
   return h.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-/** Parse a bulk-import CSV into preview rows, matching each against existing
- * items by Name (same rule the New/Edit Item form already uses to block
- * duplicates), and flagging errors / in-file duplicates. */
-function buildPreview(text: string, existing: Item[]): PreviewRow[] {
-  const table = parseCsv(text);
+/** Turn a parsed bulk-import table (from CSV or an Excel sheet) into preview
+ * rows, matching each against existing items by Name (same rule the New/Edit
+ * Item form already uses to block duplicates), and flagging errors / in-file
+ * duplicates. */
+function buildPreview(table: string[][], existing: Item[]): PreviewRow[] {
   if (table.length < 2) return [];
 
   const header = table[0].map(normalizeHeader);
@@ -905,19 +948,32 @@ function BulkImportDialog({
     const file = e.target.files?.[0];
     if (!file) return;
     setFileName(file.name);
-    // Decode by BOM — Excel's "Unicode Text" export is UTF-16, which read
-    // as UTF-8 turns into garbage and every row silently errors
     const buf = await file.arrayBuffer();
-    const b = new Uint8Array(buf);
-    const text =
-      b[0] === 0xff && b[1] === 0xfe
-        ? new TextDecoder("utf-16le").decode(buf)
-        : b[0] === 0xfe && b[1] === 0xff
-          ? new TextDecoder("utf-16be").decode(buf)
-          : new TextDecoder("utf-8").decode(buf);
-    const table = parseCsv(text);
+    const isExcel = /\.(xlsx|xls)$/i.test(file.name);
+    let table: string[][];
+    if (isExcel) {
+      // Real Excel workbook, not CSV text — read via the same xlsx library
+      // already used for exports, take the first sheet, cells as strings so
+      // downstream parsing (num(), trim()) matches the CSV path exactly.
+      const wb = XLSX.read(buf, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      table = (XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" }) as unknown[][]).map(
+        (row) => row.map((c) => String(c ?? "")),
+      );
+    } else {
+      // Decode by BOM — Excel's "Unicode Text" export is UTF-16, which read
+      // as UTF-8 turns into garbage and every row silently errors
+      const b = new Uint8Array(buf);
+      const text =
+        b[0] === 0xff && b[1] === 0xfe
+          ? new TextDecoder("utf-16le").decode(buf)
+          : b[0] === 0xfe && b[1] === 0xff
+            ? new TextDecoder("utf-16be").decode(buf)
+            : new TextDecoder("utf-8").decode(buf);
+      table = parseCsv(text);
+    }
     if (!table.length) {
-      toast.error("File looks empty or unreadable — export it as CSV and try again");
+      toast.error("File looks empty or unreadable — export it as CSV/Excel and try again");
       setRows([]);
       return;
     }
@@ -929,7 +985,7 @@ function BulkImportDialog({
       setRows([]);
       return;
     }
-    setRows(buildPreview(text, ItemRepo.all()));
+    setRows(buildPreview(table, ItemRepo.all()));
   };
 
   const newCount = rows.filter((r) => r.status === "new").length;
@@ -1009,7 +1065,7 @@ function BulkImportDialog({
           <input
             ref={fileRef}
             type="file"
-            accept=".csv,text/csv,text/comma-separated-values,application/csv,application/vnd.ms-excel,text/plain"
+            accept=".csv,.xlsx,.xls,text/csv,text/comma-separated-values,application/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain"
             onChange={onFile}
             className="text-sm file:mr-3 file:h-8 file:px-3 file:rounded-md file:border file:bg-background file:text-sm file:font-medium file:cursor-pointer"
           />

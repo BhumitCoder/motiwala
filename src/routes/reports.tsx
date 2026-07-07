@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   SalesRepo,
   PurchaseRepo,
@@ -16,9 +16,11 @@ import { printWithName } from "@/lib/print";
 import { computeCogs, buildPartyStatement } from "@/lib/ledger";
 import { downloadCsv } from "@/lib/csv";
 import { downloadXlsx } from "@/lib/xlsx";
+import { downloadElementAsPdf, shareElementAsPdf } from "@/lib/pdf";
 import { partyStatementSheet } from "@/lib/partySheet";
 import { PartyStatementRowBlock } from "./parties_.$id";
 import { fmtMode } from "@/components/ModePills";
+import { toast } from "sonner";
 import {
   FileText,
   BarChart3,
@@ -28,6 +30,8 @@ import {
   RefreshCcw,
   Printer,
   Download,
+  FileDown,
+  Share2,
   Search,
 } from "lucide-react";
 
@@ -68,8 +72,40 @@ function ReportsPage() {
   const [active, setActive] = useState(REPORTS.some((x) => x.key === r) ? (r as string) : "pl");
   const [dateFrom, setDateFrom] = useState(monthStart);
   const [dateTo, setDateTo] = useState(today);
+  const [pdfBusy, setPdfBusy] = useState<"download" | "share" | null>(null);
+  const printRef = useRef<HTMLDivElement>(null);
 
   const current = REPORTS.find((r) => r.key === active);
+  const reportFilename = () =>
+    `${(current?.label ?? "Report").replace(/\s+/g, "-")}-${dateFrom}-to-${dateTo}`;
+
+  const handleDownloadPdf = async () => {
+    if (!printRef.current || pdfBusy) return;
+    setPdfBusy("download");
+    try {
+      await downloadElementAsPdf(printRef.current, reportFilename(), "landscape");
+      toast.success("Report downloaded as PDF");
+    } catch {
+      toast.error("Could not generate PDF — try Print instead");
+    } finally {
+      setPdfBusy(null);
+    }
+  };
+
+  const handleShare = async () => {
+    if (!printRef.current || pdfBusy) return;
+    setPdfBusy("share");
+    try {
+      const result = await shareElementAsPdf(printRef.current, reportFilename(), "landscape");
+      if (result === "shared") toast.success("Report shared");
+      else if (result === "downloaded")
+        toast.info("Sharing isn't supported here — PDF downloaded instead");
+    } catch {
+      toast.error("Could not share report — try Download PDF instead");
+    } finally {
+      setPdfBusy(null);
+    }
+  };
 
   return (
     <div className="flex flex-col h-full bg-[#f5f6fa]">
@@ -99,15 +135,27 @@ function ReportsPage() {
             className="border border-gray-200 rounded-md text-xs px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-200"
           />
           <button
-            onClick={() =>
-              printWithName(
-                `${(current?.label ?? "Report").replace(/\s+/g, "-")}-${dateFrom}-to-${dateTo}`,
-              )
-            }
-            className="inline-flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 rounded-md text-xs font-semibold text-gray-600 hover:bg-gray-50 transition"
-            title="Print, or choose 'Save as PDF' in the print dialog"
+            onClick={handleDownloadPdf}
+            disabled={pdfBusy !== null}
+            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50"
+            title="Download report as PDF"
           >
-            <Printer className="h-3.5 w-3.5" /> Print / PDF
+            <FileDown className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={handleShare}
+            disabled={pdfBusy !== null}
+            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50"
+            title="Share report PDF"
+          >
+            <Share2 className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={() => printWithName(reportFilename())}
+            className="inline-flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 rounded-md text-xs font-semibold text-gray-600 hover:bg-gray-50 transition"
+            title="Print"
+          >
+            <Printer className="h-3.5 w-3.5" /> Print
           </button>
         </div>
       </div>
@@ -135,8 +183,8 @@ function ReportsPage() {
           })}
         </aside>
 
-        {/* Report content (print-area so Print/PDF captures exactly this) */}
-        <div className="flex-1 overflow-auto p-5 print-visible print:p-6">
+        {/* Report content (print-area so Print/PDF/Share all capture exactly this) */}
+        <div ref={printRef} className="flex-1 overflow-auto p-5 print-visible print:p-6">
           <ReportView which={active} dateFrom={dateFrom} dateTo={dateTo} />
         </div>
       </div>

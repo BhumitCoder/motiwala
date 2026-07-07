@@ -18,7 +18,7 @@ import {
 } from "@/repositories";
 import { partyBalances } from "@/lib/ledger";
 import type { Invoice, LineItem, Party, Item, PaymentMode, BankAccount } from "@/types";
-import { fmtMoney, today } from "@/lib/format";
+import { fmtMoney, fmtDate, today } from "@/lib/format";
 import { toast } from "sonner";
 import {
   Trash2,
@@ -31,6 +31,7 @@ import {
   Pencil,
   Check,
   Loader2,
+  AlertTriangle,
 } from "lucide-react";
 import { PrintableInvoice } from "@/components/PrintableInvoice";
 import { NumInput } from "@/components/NumInput";
@@ -214,6 +215,29 @@ export function InvoiceForm({ mode, existing }: Props) {
     setTimeout(() => partyRef.current?.focus(), 30);
   };
 
+  // Every past bill where this party bought/sold this exact item, most
+  // recent first — many shops negotiate a standing rate per customer/item
+  // that doesn't match the catalog price, so seeing (and re-using) the last
+  // few prices charged beats re-typing it from memory every time.
+  const partyItemHistory = (
+    itemId: string,
+    partyId: string,
+  ): { date: string; qty: number; price: number }[] => {
+    if (!partyId) return [];
+    const rows: { date: string; created: string; qty: number; price: number }[] = [];
+    for (const doc of repo.all()) {
+      if (doc.partyId !== partyId) continue;
+      for (const l of doc.lineItems) {
+        if (l.itemId === itemId) rows.push({ date: doc.date, created: doc.createdAt || "", qty: l.qty, price: l.price });
+      }
+    }
+    rows.sort((a, b) => b.date.localeCompare(a.date) || b.created.localeCompare(a.created));
+    return rows.slice(0, 5).map(({ date, qty, price }) => ({ date, qty, price }));
+  };
+
+  const lastPartyPrice = (itemId: string, partyId: string): number | undefined =>
+    partyItemHistory(itemId, partyId)[0]?.price;
+
   // Returns the id of the line that was added/updated, so the caller can move
   // focus straight to that row's Qty field for fast entry.
   const addLineItem = (it: Item): string => {
@@ -224,13 +248,14 @@ export function InvoiceForm({ mode, existing }: Props) {
       toast.info(`${it.name} — quantity increased to ${existingLine.qty + 1}`);
       return existingLine.id;
     }
+    const historicalPrice = lastPartyPrice(it.id, inv.partyId);
     const line: LineItem = {
       id: genId(),
       itemId: it.id,
       name: it.name,
       qty: 1,
       unit: it.unit,
-      price: isSale ? it.salePrice || it.purchasePrice : it.purchasePrice,
+      price: historicalPrice ?? (isSale ? it.salePrice || it.purchasePrice : it.purchasePrice),
       discountPct: 0,
       gstRate: it.gstRate,
       amount: 0,
@@ -297,6 +322,45 @@ export function InvoiceForm({ mode, existing }: Props) {
   const removeLine = (id: string) => {
     const lines = inv.lineItems.filter((l) => l.id !== id);
     setInv({ ...inv, lineItems: lines, ...recalc(lines) });
+  };
+
+  // Swaps the item on an already-added row (clicked from the item-name cell)
+  // instead of forcing a delete + re-add. Qty/discount are kept as typed;
+  // price/unit/GST reset to the newly picked item (party's historical price
+  // if there is one), same defaulting as a fresh addLineItem(). Returns the
+  // id of the row that ends up holding the item, so the caller can move
+  // focus straight to its Qty field.
+  const changeLineItem = (lineId: string, it: Item): string => {
+    const dup = inv.lineItems.find((l) => l.itemId === it.id && l.id !== lineId);
+    if (dup) {
+      const removed = inv.lineItems.find((l) => l.id === lineId);
+      const mergedQty = dup.qty + (removed?.qty ?? 0);
+      const gstMult = gstOn ? 1 + dup.gstRate / 100 : 1;
+      const lines = inv.lineItems
+        .filter((l) => l.id !== lineId)
+        .map((l) =>
+          l.id === dup.id
+            ? {
+                ...l,
+                qty: mergedQty,
+                amount: r2(r2(mergedQty * l.price * (1 - l.discountPct / 100)) * gstMult),
+              }
+            : l,
+        );
+      setInv({ ...inv, lineItems: lines, ...recalc(lines) });
+      toast.info(`${it.name} — merged into existing line, quantity increased to ${mergedQty}`);
+      return dup.id;
+    }
+    const historicalPrice = lastPartyPrice(it.id, inv.partyId);
+    updateLine(lineId, {
+      itemId: it.id,
+      name: it.name,
+      unit: it.unit,
+      gstRate: it.gstRate,
+      price: historicalPrice ?? (isSale ? it.salePrice || it.purchasePrice : it.purchasePrice),
+      costPrice: it.purchasePrice,
+    });
+    return lineId;
   };
 
   const setDiscount = (d: number) => setInv({ ...inv, discount: d, ...recalc(inv.lineItems, d) });
@@ -842,7 +906,13 @@ export function InvoiceForm({ mode, existing }: Props) {
                   <tr key={l.id} className="border-t hover:bg-accent/30">
                     <td className="px-3 py-1.5 text-muted-foreground text-[11px]">{idx + 1}</td>
                     <td className="px-3 py-1.5">
-                      <div className="font-medium">{l.name}</div>
+                      <ItemNameCell
+                        name={l.name}
+                        items={items}
+                        isSale={isSale}
+                        gstOn={gstOn}
+                        onChange={(it) => changeLineItem(l.id, it)}
+                      />
                     </td>
                     <td className="py-1.5 px-1">
                       <NumInput
@@ -865,12 +935,22 @@ export function InvoiceForm({ mode, existing }: Props) {
                         className="w-full h-7 px-1.5 border rounded bg-background focus:border-primary outline-none"
                       />
                     </td>
-                    <td className="py-1.5 px-1">
-                      <NumInput
-                        value={l.price}
-                        onValue={(n) => updateLine(l.id, { price: n })}
-                        className="w-full h-7 px-1.5 text-right border rounded bg-background focus:border-primary outline-none"
-                      />
+                    <td className="py-1.5 px-1 relative">
+                      {inv.partyId ? (
+                        <PriceHistoryCell
+                          value={l.price}
+                          onValue={(n) => updateLine(l.id, { price: n })}
+                          history={partyItemHistory(l.itemId, inv.partyId)}
+                          partyName={inv.partyName}
+                          isSale={isSale}
+                        />
+                      ) : (
+                        <NumInput
+                          value={l.price}
+                          onValue={(n) => updateLine(l.id, { price: n })}
+                          className="w-full h-7 px-1.5 text-right border rounded bg-background focus:border-primary outline-none"
+                        />
+                      )}
                     </td>
                     <td className="py-1.5 px-1">
                       <NumInput
@@ -1108,13 +1188,25 @@ export function InvoiceForm({ mode, existing }: Props) {
       <QuickAddPartyDialog
         draft={quickAddParty}
         isSale={isSale}
+        existingParties={allParties}
         onCancel={() => setQuickAddParty(null)}
+        onPickExisting={(p) => {
+          setQuickAddParty(null);
+          selectParty(p);
+        }}
         onConfirm={confirmQuickAddParty}
       />
       <QuickAddItemDialog
         draft={quickAddItem}
         isSale={isSale}
+        existingItems={items}
         onCancel={() => setQuickAddItem(null)}
+        onPickExisting={(it) => {
+          if (!quickAddItem) return;
+          focusQtyId.current = addLineItem(it);
+          completePendingRow(quickAddItem.rowId);
+          setQuickAddItem(null);
+        }}
         onConfirm={confirmQuickAddItem}
       />
     </div>
@@ -1340,15 +1432,261 @@ function ItemEntryRow({
   );
 }
 
+function ItemNameCell({
+  name,
+  items,
+  isSale,
+  gstOn,
+  onChange,
+}: {
+  name: string;
+  items: Item[];
+  isSale: boolean;
+  gstOn: boolean;
+  onChange: (it: Item) => string;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [q, setQ] = useState("");
+  const [idx, setIdx] = useState(0);
+  const inputElRef = useRef<HTMLInputElement | null>(null);
+  const [rect, setRect] = useState<{ top: number; left: number; width: number } | null>(null);
+
+  useEffect(() => {
+    if (!editing) return;
+    const updateRect = () => {
+      const el = inputElRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      setRect({ top: r.bottom + 4, left: r.left, width: Math.max(r.width, 240) });
+    };
+    updateRect();
+    window.addEventListener("scroll", updateRect, true);
+    window.addEventListener("resize", updateRect);
+    return () => {
+      window.removeEventListener("scroll", updateRect, true);
+      window.removeEventListener("resize", updateRect);
+    };
+  }, [editing]);
+
+  const startEdit = () => {
+    setQ("");
+    setIdx(0);
+    setEditing(true);
+  };
+
+  const suggests = q.trim()
+    ? items
+        .filter(
+          (i) =>
+            i.name.toLowerCase().includes(q.toLowerCase()) ||
+            i.sku?.toLowerCase().includes(q.toLowerCase()) ||
+            i.barcode?.includes(q),
+        )
+        .slice(0, 8)
+    : items.slice(0, 8);
+
+  const pick = (it: Item) => {
+    setEditing(false);
+    const focusId = onChange(it);
+    setTimeout(() => {
+      const qtyEl = document.getElementById(`qty-${focusId}`) as HTMLInputElement | null;
+      qtyEl?.focus();
+    }, 0);
+  };
+
+  if (!editing) {
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        title="Click to change item"
+        onClick={startEdit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") startEdit();
+        }}
+        className="font-medium cursor-pointer hover:underline hover:text-primary"
+      >
+        {name}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <input
+        ref={inputElRef}
+        autoFocus
+        value={q}
+        onChange={(e) => {
+          setQ(e.target.value);
+          setIdx(0);
+        }}
+        onBlur={() => setTimeout(() => setEditing(false), 150)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            setEditing(false);
+          } else if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setIdx((i) => Math.min(suggests.length - 1, i + 1));
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setIdx((i) => Math.max(0, i - 1));
+          } else if (e.key === "Enter") {
+            e.preventDefault();
+            if (suggests[idx]) pick(suggests[idx]);
+          }
+        }}
+        placeholder="Type to change item…"
+        className="w-full h-7 px-1.5 border rounded bg-background focus:border-primary outline-none text-sm"
+      />
+      {rect &&
+        createPortal(
+          <div
+            style={{ position: "fixed", top: rect.top, left: rect.left, width: rect.width }}
+            className="z-50 border rounded-md bg-popover shadow-elevated max-h-72 overflow-auto"
+          >
+            {suggests.length === 0 && (
+              <div className="px-3 py-3 text-[12px] text-muted-foreground text-center">
+                No items found
+              </div>
+            )}
+            {suggests.map((it, i) => (
+              <div
+                key={it.id}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  pick(it);
+                }}
+                className={`px-3 py-2 text-sm cursor-pointer flex justify-between ${i === idx ? "bg-accent" : "hover:bg-accent"}`}
+              >
+                <div>
+                  <div className="font-semibold">{it.name}</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    Stock: {it.stock} {it.unit}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="font-semibold tabular-nums">
+                    {fmtMoney(isSale ? it.salePrice || it.purchasePrice : it.purchasePrice)}
+                  </div>
+                  {gstOn && <div className="text-[11px] text-muted-foreground">GST {it.gstRate}%</div>}
+                </div>
+              </div>
+            ))}
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
+function PriceHistoryCell({
+  value,
+  onValue,
+  history,
+  partyName,
+  isSale,
+}: {
+  value: number;
+  onValue: (n: number) => void;
+  history: { date: string; qty: number; price: number }[];
+  partyName: string;
+  isSale: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const inputElRef = useRef<HTMLInputElement | null>(null);
+  const [rect, setRect] = useState<{ top: number; left: number; width: number } | null>(null);
+
+  // Same portal trick as ItemEntryRow's dropdown — this cell lives inside
+  // the overflow-x-auto item table, so a plain absolutely positioned popup
+  // gets clipped by the table's own scroll box.
+  useEffect(() => {
+    if (!open) return;
+    const updateRect = () => {
+      const el = inputElRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      setRect({ top: r.bottom + 4, left: r.right - 256, width: 256 });
+    };
+    updateRect();
+    window.addEventListener("scroll", updateRect, true);
+    window.addEventListener("resize", updateRect);
+    return () => {
+      window.removeEventListener("scroll", updateRect, true);
+      window.removeEventListener("resize", updateRect);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <NumInput
+        ref={inputElRef}
+        value={value}
+        onValue={onValue}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        className="w-full h-7 px-1.5 text-right border rounded bg-background focus:border-primary outline-none"
+      />
+      {open &&
+        rect &&
+        createPortal(
+          <div
+            style={{ position: "fixed", top: rect.top, left: rect.left, width: rect.width }}
+            className="z-50 border rounded-md bg-popover shadow-elevated overflow-hidden"
+          >
+            <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground bg-muted/50 border-b">
+              Last {isSale ? "Sale" : "Purchase"} Prices — {partyName}
+            </div>
+            {!history.length ? (
+              <div className="px-3 py-3 text-[12px] text-muted-foreground text-center">
+                No previous transaction found
+              </div>
+            ) : (
+              <div>
+                <div className="grid grid-cols-3 gap-2 px-3 py-1 text-[10px] font-semibold uppercase text-muted-foreground border-b">
+                  <span>Date</span>
+                  <span className="text-right">Qty</span>
+                  <span className="text-right">Price</span>
+                </div>
+                {history.map((h, i) => (
+                  <button
+                    type="button"
+                    key={i}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      onValue(h.price);
+                      setOpen(false);
+                    }}
+                    className="w-full grid grid-cols-3 gap-2 px-3 py-1.5 text-[12px] text-left hover:bg-accent border-b last:border-0"
+                  >
+                    <span className="text-muted-foreground">{fmtDate(h.date)}</span>
+                    <span className="text-right tabular-nums">{h.qty}</span>
+                    <span className="text-right tabular-nums font-semibold">{fmtMoney(h.price)}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
 function QuickAddItemDialog({
   draft,
   isSale,
+  existingItems = [],
   onCancel,
+  onPickExisting,
   onConfirm,
 }: {
   draft: { name: string; rowId: string } | null;
   isSale: boolean;
+  existingItems?: Item[];
   onCancel: () => void;
+  onPickExisting?: (it: Item) => void;
   onConfirm: (details: {
     name: string;
     unit: string;
@@ -1362,6 +1700,7 @@ function QuickAddItemDialog({
   const [gstRate, setGstRate] = useState(0);
   const [salePrice, setSalePrice] = useState(0);
   const [purchasePrice, setPurchasePrice] = useState(0);
+  const [nameOpen, setNameOpen] = useState(false);
   const firstRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -1371,6 +1710,7 @@ function QuickAddItemDialog({
       setGstRate(0);
       setSalePrice(0);
       setPurchasePrice(0);
+      setNameOpen(false);
       setTimeout(() => firstRef.current?.focus(), 50);
     }
   }, [draft]);
@@ -1386,6 +1726,15 @@ function QuickAddItemDialog({
     onConfirm({ name, unit, gstRate, salePrice, purchasePrice });
   };
 
+  // Live "does this already exist?" hint — the name typed at the counter
+  // didn't exactly match anyone, but if they edit it here into something
+  // close to an existing item, flag it before a near-duplicate gets created.
+  const nameQ = name.trim().toLowerCase();
+  const similarItemsAll = nameQ
+    ? existingItems.filter((it) => it.name.trim().toLowerCase().includes(nameQ))
+    : [];
+  const similarItems = similarItemsAll.slice(0, 5);
+
   return (
     <Dialog open onOpenChange={(v) => !v && onCancel()}>
       <DialogContent className="max-w-md">
@@ -1400,13 +1749,50 @@ function QuickAddItemDialog({
           this {isSale ? "invoice" : "bill"}.
         </p>
         <form onSubmit={submit} className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div className="col-span-2">
+          <div className="col-span-2 relative">
             <Field
               ref={firstRef}
               label="Name *"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                setName(e.target.value);
+                setNameOpen(true);
+              }}
+              onFocus={() => setNameOpen(true)}
+              onBlur={() => setTimeout(() => setNameOpen(false), 150)}
+              autoComplete="off"
             />
+            {nameOpen && similarItems.length > 0 && (
+              <div className="absolute z-30 top-full left-0 right-0 mt-1 border rounded-md bg-popover shadow-elevated max-h-52 overflow-auto">
+                <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-amber-600 bg-amber-50 border-b flex items-center gap-1.5">
+                  <AlertTriangle className="h-3 w-3" />
+                  {similarItemsAll.length === 1 ? "Similar item exists" : "Similar items exist"} —
+                  click to use it instead
+                </div>
+                {similarItems.map((it) => (
+                  <div
+                    key={it.id}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      onPickExisting?.(it);
+                      setNameOpen(false);
+                    }}
+                    className="px-3 py-2 text-sm cursor-pointer hover:bg-accent flex items-center justify-between"
+                  >
+                    <span className="font-medium">{it.name}</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      Stock: {it.stock} {it.unit}
+                    </span>
+                  </div>
+                ))}
+                {similarItemsAll.length > similarItems.length && (
+                  <div className="px-3 py-1.5 text-[11px] text-muted-foreground border-t">
+                    +{similarItemsAll.length - similarItems.length} more match
+                    {similarItemsAll.length - similarItems.length > 1 ? "es" : ""}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           <Field label="Unit" value={unit} onChange={(e) => setUnit(e.target.value)} />
           <Field

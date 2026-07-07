@@ -1,5 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
+import { toast } from "sonner";
 import {
   SalesRepo,
   PurchaseRepo,
@@ -15,6 +16,7 @@ import {
 import { buildBankLedger, paidViaPayments } from "@/lib/ledger";
 import { fmtMoney, fmtDate, today, ymd } from "@/lib/format";
 import { printWithName } from "@/lib/print";
+import { downloadElementAsPdf, shareElementAsPdf } from "@/lib/pdf";
 import { downloadCsv } from "@/lib/csv";
 import { fmtMode } from "@/components/ModePills";
 import {
@@ -33,6 +35,8 @@ import {
   Landmark,
   ArrowDownCircle,
   ArrowUpCircle,
+  FileDown,
+  Share2,
 } from "lucide-react";
 
 export const Route = createFileRoute("/daybook")({ component: DaybookPage });
@@ -54,6 +58,8 @@ function DaybookPage() {
   const navigate = useNavigate();
   const [date, setDate] = useState(today());
   const [q, setQ] = useState("");
+  const [pdfBusy, setPdfBusy] = useState<"download" | "share" | null>(null);
+  const printRef = useRef<HTMLDivElement>(null);
 
   const rows = useMemo<DayRow[]>(() => {
     const list: DayRow[] = [];
@@ -302,6 +308,34 @@ function DaybookPage() {
     downloadCsv(`Daybook-${date}`, allRows[0], allRows.slice(1));
   };
 
+  const handleDownloadPdf = async () => {
+    if (!printRef.current || pdfBusy) return;
+    setPdfBusy("download");
+    try {
+      await downloadElementAsPdf(printRef.current, `Daybook-${date}`, "portrait");
+      toast.success("Daybook downloaded as PDF");
+    } catch {
+      toast.error("Could not generate PDF — try Print instead");
+    } finally {
+      setPdfBusy(null);
+    }
+  };
+
+  const handleShare = async () => {
+    if (!printRef.current || pdfBusy) return;
+    setPdfBusy("share");
+    try {
+      const result = await shareElementAsPdf(printRef.current, `Daybook-${date}`, "portrait");
+      if (result === "shared") toast.success("Daybook shared");
+      else if (result === "downloaded")
+        toast.info("Sharing isn't supported here — PDF downloaded instead");
+    } catch {
+      toast.error("Could not share daybook — try Download PDF instead");
+    } finally {
+      setPdfBusy(null);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-[#f5f6fa]">
       <div className="no-print bg-white border-b px-5 py-3 flex items-center gap-3 flex-wrap">
@@ -345,16 +379,33 @@ function DaybookPage() {
           </button>
           <button
             onClick={downloadExcel}
-            className="inline-flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 rounded-md text-xs font-semibold text-gray-600 hover:bg-gray-50"
+            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition"
+            title="Download daybook as Excel"
           >
-            <Download className="h-3.5 w-3.5" /> Download Excel
+            <Download className="h-4 w-4" />
+          </button>
+          <button
+            onClick={handleDownloadPdf}
+            disabled={pdfBusy !== null}
+            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50"
+            title="Download daybook as PDF"
+          >
+            <FileDown className="h-4 w-4" />
+          </button>
+          <button
+            onClick={handleShare}
+            disabled={pdfBusy !== null}
+            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50"
+            title="Share daybook PDF"
+          >
+            <Share2 className="h-4 w-4" />
           </button>
           <button
             onClick={() => printWithName(`Daybook-${date}`)}
-            className="inline-flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 rounded-md text-xs font-semibold text-gray-600 hover:bg-gray-50"
-            title="Print, or choose 'Save as PDF' in the print dialog"
+            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition"
+            title="Print"
           >
-            <Printer className="h-3.5 w-3.5" /> Print / PDF
+            <Printer className="h-4 w-4" />
           </button>
           <div className="relative w-44 lg:w-56">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
@@ -409,7 +460,7 @@ function DaybookPage() {
       </div>
 
       <div className="flex-1 overflow-auto">
-        <div className="print-visible bg-white print:p-6">
+        <div ref={printRef} className="print-visible bg-white print:p-6">
           <div className="overflow-x-auto">
             <table className="w-full text-[12.5px] border-collapse min-w-max">
               <thead>

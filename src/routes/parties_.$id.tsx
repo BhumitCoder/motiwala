@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   PartyRepo,
   SalesRepo,
@@ -13,6 +13,7 @@ import { buildPartyStatement, type PartyStatementRow } from "@/lib/ledger";
 import { fmtMoney, fmtDate } from "@/lib/format";
 import { printWithName } from "@/lib/print";
 import { downloadXlsx } from "@/lib/xlsx";
+import { downloadElementAsPdf, shareElementAsPdf } from "@/lib/pdf";
 import { partyStatementSheet } from "@/lib/partySheet";
 import { PartyDialog } from "./parties";
 import type { Party } from "@/types";
@@ -24,6 +25,8 @@ import {
   AlertCircle,
   Phone,
   Download,
+  FileDown,
+  Share2,
   Receipt,
   CheckCircle2,
   type LucideIcon,
@@ -41,6 +44,8 @@ function PartyStatementPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [pdfBusy, setPdfBusy] = useState<"download" | "share" | null>(null);
+  const printRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setParty(PartyRepo.get(id) ?? null);
@@ -108,6 +113,36 @@ function PartyStatementPage() {
     toast.success("Statement downloaded as Excel");
   };
 
+  const pdfName = () => `Statement-${party.name.replace(/\s+/g, "-")}`;
+
+  const handleDownloadPdf = async () => {
+    if (!printRef.current || pdfBusy) return;
+    setPdfBusy("download");
+    try {
+      await downloadElementAsPdf(printRef.current, pdfName(), "landscape");
+      toast.success("Statement downloaded as PDF");
+    } catch {
+      toast.error("Could not generate PDF — try Print instead");
+    } finally {
+      setPdfBusy(null);
+    }
+  };
+
+  const handleShare = async () => {
+    if (!printRef.current || pdfBusy) return;
+    setPdfBusy("share");
+    try {
+      const result = await shareElementAsPdf(printRef.current, pdfName(), "landscape");
+      if (result === "shared") toast.success("Statement shared");
+      else if (result === "downloaded")
+        toast.info("Sharing isn't supported here — PDF downloaded instead");
+    } catch {
+      toast.error("Could not share statement — try Download PDF instead");
+    } finally {
+      setPdfBusy(null);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-[#f5f6fa]">
       {/* Header */}
@@ -157,23 +192,39 @@ function PartyStatementPage() {
           <button
             onClick={downloadExcel}
             className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition"
-            title="Download full ledger as Excel/CSV"
+            title="Download full ledger as Excel"
           >
             <Download className="h-4 w-4" />
           </button>
           <button
+            onClick={handleDownloadPdf}
+            disabled={pdfBusy !== null}
+            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50"
+            title="Download statement as PDF"
+          >
+            <FileDown className="h-4 w-4" />
+          </button>
+          <button
+            onClick={handleShare}
+            disabled={pdfBusy !== null}
+            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50"
+            title="Share statement PDF"
+          >
+            <Share2 className="h-4 w-4" />
+          </button>
+          <button
             onClick={() => printWithName(`Statement-${party.name.replace(/\s+/g, "-")}`)}
             className="inline-flex items-center gap-1.5 h-8 px-3 bg-primary text-white rounded-md text-sm font-semibold hover:opacity-90 transition"
-            title="Print, or choose 'Save as PDF' in the print dialog"
+            title="Print"
           >
-            <Printer className="h-4 w-4" /> Print / PDF
+            <Printer className="h-4 w-4" /> Print
           </button>
         </div>
       </div>
 
       {/* Statement (also the printable area) */}
       <div className="flex-1 overflow-auto p-5">
-        <div className="print-visible bg-white border rounded-lg shadow-sm max-w-6xl mx-auto">
+        <div ref={printRef} className="print-visible bg-white border rounded-lg shadow-sm max-w-6xl mx-auto">
           {/* The statement is 9 columns wide plus a nested item table — too
               wide for portrait A4, so it gets cut off at the right edge on
               print/PDF. Landscape gives it enough width to fit. */}
