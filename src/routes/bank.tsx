@@ -136,11 +136,12 @@ function BankPage() {
           </div>
         }
       />
-      <div className="p-3 flex-1 min-h-0 flex">
+      <div className="p-6 flex-1 min-h-0 flex">
         <DataTable
           columns={columns}
           rows={rows}
           rowKey={(r) => r.id}
+          activateOnClick
           onRowActivate={(r) => navigate({ to: "/bank/$id", params: { id: r.id } })}
           onDelete={(r) => {
             if (confirm(`Delete ${r.name}?`)) {

@@ -14,7 +14,10 @@ export function MobileBottomNav() {
   const navigate = useNavigate();
   const toggleMobileNav = useWorkspace((s) => s.toggleMobileNav);
 
-  const isActive = (p: string) => (p === "/" ? pathname === "/" : pathname.startsWith(p));
+  // Plain startsWith would also match a sibling route sharing the same
+  // prefix (e.g. "/sales" matching "/sale-return") — require a "/" boundary.
+  const isActive = (p: string) =>
+    p === "/" ? pathname === "/" : pathname === p || pathname.startsWith(`${p}/`);
 
   const tabClass = (active: boolean) =>
     cn(

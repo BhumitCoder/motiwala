@@ -12,7 +12,7 @@ import {
 } from "@/repositories";
 import type { Item } from "@/types";
 import { fmtMoney } from "@/lib/format";
-import { Boxes, Search, Wallet, AlertTriangle, type LucideIcon } from "lucide-react";
+import { Boxes, Search } from "lucide-react";
 
 export const Route = createFileRoute("/inventory")({ component: InventoryPage });
 
@@ -56,7 +56,7 @@ function InventoryPage() {
     {
       key: "name",
       label: "Item",
-      render: (r) => <span className="font-medium">{r.name}</span>,
+      render: (r) => r.name,
       sortValue: (r) => r.name,
     },
     {
@@ -77,14 +77,14 @@ function InventoryPage() {
       label: "Stock In",
       align: "right",
       width: "90px",
-      render: (r) => <span className="text-success">+{purchaseQty.get(r.id) ?? 0}</span>,
+      render: (r) => `+${purchaseQty.get(r.id) ?? 0}`,
     },
     {
       key: "out",
       label: "Stock Out",
       align: "right",
       width: "90px",
-      render: (r) => <span className="text-warning">-{salesQty.get(r.id) ?? 0}</span>,
+      render: (r) => `-${salesQty.get(r.id) ?? 0}`,
     },
     {
       key: "stock",
@@ -94,10 +94,12 @@ function InventoryPage() {
       render: (r) => {
         // minStock=0 is a valid "alert exactly at zero" threshold (must not
         // be treated as unset), and negative/oversold stock should always
-        // stand out even when no threshold is configured at all.
+        // stand out even when no threshold is configured at all — this is
+        // the one genuine alert on this page, so it's the one place color
+        // stays (same rule Items follows for its own low-stock warning).
         const low = (r.minStock != null && r.stock <= r.minStock) || r.stock < 0;
         return (
-          <span className={`font-medium ${low ? "text-warning" : ""}`}>
+          <span className={low ? "text-warning font-medium" : ""}>
             {r.stock} {r.unit}
           </span>
         );
@@ -132,56 +134,33 @@ function InventoryPage() {
         subtitle={`${rows.length} items`}
         icon={<Boxes className="h-5 w-5" />}
         actions={
-          <>
-            <InventoryCard icon={Wallet} label="Stock Value" value={fmtMoney(totalValue)} tone="primary" />
-            <InventoryCard icon={AlertTriangle} label="Low Stock" value={String(lowCount)} tone="rose" />
-            <div className="relative w-44 lg:w-56">
-              <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
-              <input
-                autoFocus
-                placeholder="Search items by name or SKU..."
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                className="w-full h-8 pl-8 pr-3 border border-gray-200 rounded-md text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
-              />
-            </div>
-          </>
+          <div className="relative w-44 lg:w-56">
+            <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input
+              autoFocus
+              placeholder="Search items by name or SKU..."
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              className="w-full h-8 pl-8 pr-3 border border-gray-200 rounded-md text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
+            />
+          </div>
         }
       />
-      <div className="p-3 flex-1 min-h-0 flex">
-        <DataTable columns={columns} rows={filtered} rowKey={(r) => r.id} />
-      </div>
-    </div>
-  );
-}
-
-const INV_TONES = {
-  primary: { bg: "bg-primary-soft", text: "text-primary" },
-  rose: { bg: "bg-rose-50", text: "text-rose-600" },
-} as const;
-
-function InventoryCard({
-  icon: Icon,
-  label,
-  value,
-  tone,
-}: {
-  icon: LucideIcon;
-  label: string;
-  value: string;
-  tone: keyof typeof INV_TONES;
-}) {
-  const t = INV_TONES[tone];
-  return (
-    <div className="shrink-0 flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border border-gray-100 bg-white">
-      <div className={`h-8 w-8 rounded-md flex items-center justify-center shrink-0 ${t.bg} ${t.text}`}>
-        <Icon className="h-4 w-4" />
-      </div>
-      <div className="min-w-0">
-        <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wide mb-0.5 whitespace-nowrap">
-          {label}
-        </p>
-        <p className={`text-[14px] font-bold tabular-nums whitespace-nowrap ${t.text}`}>{value}</p>
+      <div className="p-6 flex-1 min-h-0 flex">
+        <DataTable
+          columns={columns}
+          rows={filtered}
+          rowKey={(r) => r.id}
+          footer={
+            <tr>
+              <td colSpan={4}>Total ({filtered.length} items)</td>
+              <td colSpan={2}>{lowCount > 0 ? `${lowCount} low on stock` : "All stocked"}</td>
+              <td colSpan={2} className="text-right tabular-nums">
+                {fmtMoney(totalValue)}
+              </td>
+            </tr>
+          }
+        />
       </div>
     </div>
   );

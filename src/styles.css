@@ -171,8 +171,8 @@
     font-size: 13px;
   }
   ::-webkit-scrollbar {
-    width: 4px;
-    height: 4px;
+    width: 1px;
+    height: 1px;
   }
   ::-webkit-scrollbar-track {
     background: transparent;
@@ -183,6 +183,9 @@
   }
   ::-webkit-scrollbar-thumb:hover {
     background: var(--color-muted-foreground);
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
   }
 }
 
@@ -210,29 +213,56 @@
 
 @utility data-table {
   & th {
+    /* Solid, not color-mixed — this is sticky, so a translucent background
+       would let scrolled-past rows show through underneath it. */
     background: var(--color-muted);
     font-weight: 600;
     text-align: left;
-    padding: 8px 12px;
+    padding: 8px 16px;
     border-bottom: 1px solid var(--color-border);
     position: sticky;
     top: 0;
     z-index: 1;
-    font-size: 11px;
+    font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--color-muted-foreground);
   }
   & td {
-    padding: 8px 12px;
+    padding: 6px 16px;
     border-bottom: 1px solid var(--color-border);
     vertical-align: middle;
+    /* A cell wrapping to two lines makes that one row taller than every
+       other row — with large amounts (this client deals in lakhs/crores)
+       that happened constantly. Cells that need to wrap (long names) opt
+       back in per-column; the safe default for a data table is one line,
+       scrolling horizontally if a column is genuinely too narrow. */
+    white-space: nowrap;
+  }
+  & tbody tr:last-child td {
+    border-bottom: none;
   }
   & tbody tr:hover {
-    background: var(--color-accent);
+    background: color-mix(in oklch, var(--color-accent) 70%, transparent);
   }
   & tbody tr[data-selected="true"] {
     background: color-mix(in oklch, var(--color-primary) 12%, transparent);
+  }
+  & tfoot {
+    position: sticky;
+    bottom: 0;
+  }
+  & tfoot td {
+    /* Same reasoning as thead — sticky footer needs an opaque background.
+       Darker than --color-muted (which is barely off-white) and given more
+       vertical room than the compact data rows — this is the one row that
+       needs to read as "the summary," and with no bold/color left to lean
+       on, spacing + a visibly different background is what has to do it. */
+    background: color-mix(in oklch, var(--color-foreground) 6%, var(--color-background));
+    padding: 11px 16px;
+    border-top: 2px solid var(--color-border);
+    border-bottom: none;
+    font-size: 13px;
   }
 }
 

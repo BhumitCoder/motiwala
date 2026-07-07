@@ -65,12 +65,12 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "BizDesk — Billing & Inventory ERP" },
+      { title: "AIM — Billing & Inventory ERP" },
       {
         name: "description",
         content: "Keyboard-first desktop billing, inventory, and accounting software.",
       },
-      { property: "og:title", content: "BizDesk — Billing & Inventory ERP" },
+      { property: "og:title", content: "AIM — Billing & Inventory ERP" },
       {
         property: "og:description",
         content: "Keyboard-first desktop billing, inventory, and accounting software.",
@@ -165,7 +165,7 @@ function AuthGate() {
         if (!cancelled)
           setLoadError(
             "Could not load your data from the cloud. Check your internet connection " +
-              "and that Firestore security rules allow signed-in access, then reload.",
+            "and that Firestore security rules allow signed-in access, then reload.",
           );
       }
     })();
@@ -237,7 +237,7 @@ function SplashScreen() {
         <Sparkles className="h-6 w-6" />
       </div>
       <div className="text-center">
-        <p className="font-bold tracking-tight text-[18px]">BizDesk</p>
+        <p className="font-bold tracking-tight text-[18px]">AIM</p>
         <p className="text-[12px] text-muted-foreground flex items-center gap-1.5 justify-center mt-1">
           <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading your workspace…
         </p>

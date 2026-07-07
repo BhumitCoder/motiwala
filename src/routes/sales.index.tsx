@@ -13,12 +13,10 @@ import {
   Trash2,
   Pencil,
   Receipt,
-  CheckCircle2,
-  AlertCircle,
-  type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { usePagination, PaginationBar } from "@/components/Pagination";
+import { DataTable } from "@/components/DataTable";
 import { fmtMode } from "@/components/ModePills";
 import { PageHeader } from "@/components/PageHeader";
 
@@ -149,133 +147,120 @@ function SalesPage() {
         title="Sales"
         subtitle={`${filtered.length} of ${rows.length} invoices`}
         icon={<Receipt className="h-5 w-5" />}
-        iconClassName="bg-success-soft text-success"
+        iconClassName="text-success"
         actions={
           <>
-            <SalesCard icon={Receipt} label="Total Sale" value={totalAmount} tone="gray" />
-            <SalesCard icon={CheckCircle2} label="Total Paid" value={totalPaid} tone="emerald" />
-            <SalesCard icon={AlertCircle} label="Total Receivable" value={totalBalance} tone="rose" />
+            {/* Date range */}
+            <div className="flex items-center gap-1.5 h-9 pl-3 pr-2.5 rounded-lg border border-gray-200 bg-gray-50/60">
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+                className="bg-transparent text-xs text-gray-700 focus:outline-none w-[104px]"
+              />
+              <span className="text-gray-300 text-xs">–</span>
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+                className="bg-transparent text-xs text-gray-700 focus:outline-none w-[104px]"
+              />
+            </div>
+
+            {/* Party filter */}
+            <div className="relative">
+              <button
+                onClick={() => setShowPartyDrop((v) => !v)}
+                className="flex items-center gap-2 h-9 border border-gray-200 rounded-lg text-xs px-3 text-gray-700 bg-gray-50/60 hover:bg-gray-100 transition min-w-[140px]"
+              >
+                <span className="flex-1 text-left truncate">
+                  {selectedParty ? selectedParty.name : "All Customers"}
+                </span>
+                <ChevronDown className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
+              </button>
+              {showPartyDrop && (
+                <div className="absolute top-full right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-30 w-56 max-h-64 overflow-auto">
+                  <div className="p-2 border-b">
+                    <input
+                      autoFocus
+                      placeholder="Search customer..."
+                      value={partyDropQ}
+                      className="w-full text-xs px-2 py-1.5 border border-gray-200 rounded focus:outline-none"
+                      onChange={(e) => setPartyDropQ(e.target.value)}
+                    />
+                  </div>
+                  <button
+                    onClick={() => {
+                      setPartyId("all");
+                      setShowPartyDrop(false);
+                      setPartyDropQ("");
+                    }}
+                    className={`w-full text-left px-3 py-2 text-xs hover:bg-blue-50 ${partyId === "all" ? "text-blue-600 font-semibold bg-blue-50" : "text-gray-700"}`}
+                  >
+                    All Customers
+                  </button>
+                  {filteredDropdownParties.map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => {
+                        setPartyId(p.id);
+                        setShowPartyDrop(false);
+                        setPartyDropQ("");
+                      }}
+                      className={`w-full text-left px-3 py-2 text-xs hover:bg-blue-50 truncate ${partyId === p.id ? "text-blue-600 font-semibold bg-blue-50" : "text-gray-700"}`}
+                    >
+                      {p.name}
+                    </button>
+                  ))}
+                  {filteredDropdownParties.length === 0 && (
+                    <p className="text-xs text-gray-400 text-center py-3">No customers found</p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Status filter */}
+            <div className="flex items-center gap-0.5 h-9 border border-gray-200 rounded-lg p-0.5 bg-gray-50/60">
+              {STATUSES.map((s) => (
+                <button
+                  key={s.value}
+                  onClick={() => setStatus(s.value)}
+                  className={`px-2.5 h-7 rounded-md text-xs transition outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 ${status === s.value ? "bg-primary text-primary-foreground font-semibold" : "text-gray-500 hover:bg-gray-100"}`}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Search */}
+            <div className="relative w-48">
+              <Search className="h-3.5 w-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search invoice, customer..."
+                className="w-full h-9 pl-9 pr-3 rounded-lg border border-gray-200 bg-gray-50/60 text-[13px] focus:outline-none focus:ring-2 focus:ring-primary/20 focus:bg-white transition"
+              />
+            </div>
+
+            {filtersActive && (
+              <button
+                onClick={clearFilters}
+                className="text-xs text-gray-400 hover:text-gray-600 transition flex items-center gap-1"
+              >
+                <X className="h-3 w-3" /> Clear
+              </button>
+            )}
+
             <button
               onClick={() => navigate({ to: "/sales/new" })}
-              className="inline-flex items-center gap-1.5 h-8 px-4 bg-primary text-primary-foreground rounded-md text-sm font-semibold hover:opacity-90 transition"
+              className="inline-flex items-center gap-1.5 h-9 px-4 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:opacity-90 transition"
             >
               <Plus className="h-4 w-4" /> Add Sale
-              <kbd className="ml-1 text-[10px] bg-white/20 px-1.5 py-0.5 rounded">Ctrl+N</kbd>
             </button>
           </>
         }
       />
-
-      {/* Filters */}
-      <div className="bg-white border-b px-5 py-3 flex flex-wrap items-center gap-3">
-        {/* Date range */}
-        <div className="flex items-center gap-2">
-          <label className="text-xs font-medium text-gray-500">From</label>
-          <input
-            type="date"
-            value={dateFrom}
-            onChange={(e) => setDateFrom(e.target.value)}
-            className="border border-gray-200 rounded-md text-xs px-2 py-1.5 text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
-          />
-          <label className="text-xs font-medium text-gray-500">To</label>
-          <input
-            type="date"
-            value={dateTo}
-            onChange={(e) => setDateTo(e.target.value)}
-            className="border border-gray-200 rounded-md text-xs px-2 py-1.5 text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
-          />
-        </div>
-
-        {/* Party filter */}
-        <div className="relative">
-          <button
-            onClick={() => setShowPartyDrop((v) => !v)}
-            className="flex items-center gap-2 border border-gray-200 rounded-md text-xs px-3 py-1.5 text-gray-700 bg-white hover:bg-gray-50 transition min-w-[150px]"
-          >
-            <span className="flex-1 text-left truncate">
-              {selectedParty ? selectedParty.name : "All Customers"}
-            </span>
-            <ChevronDown className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
-          </button>
-          {showPartyDrop && (
-            <div className="absolute top-full left-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-30 w-56 max-h-64 overflow-auto">
-              <div className="p-2 border-b">
-                <input
-                  autoFocus
-                  placeholder="Search customer..."
-                  value={partyDropQ}
-                  className="w-full text-xs px-2 py-1.5 border border-gray-200 rounded focus:outline-none"
-                  onChange={(e) => setPartyDropQ(e.target.value)}
-                />
-              </div>
-              <button
-                onClick={() => {
-                  setPartyId("all");
-                  setShowPartyDrop(false);
-                  setPartyDropQ("");
-                }}
-                className={`w-full text-left px-3 py-2 text-xs hover:bg-blue-50 ${partyId === "all" ? "text-blue-600 font-semibold bg-blue-50" : "text-gray-700"}`}
-              >
-                All Customers
-              </button>
-              {filteredDropdownParties.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => {
-                    setPartyId(p.id);
-                    setShowPartyDrop(false);
-                    setPartyDropQ("");
-                  }}
-                  className={`w-full text-left px-3 py-2 text-xs hover:bg-blue-50 truncate ${partyId === p.id ? "text-blue-600 font-semibold bg-blue-50" : "text-gray-700"}`}
-                >
-                  {p.name}
-                </button>
-              ))}
-              {filteredDropdownParties.length === 0 && (
-                <p className="text-xs text-gray-400 text-center py-3">No customers found</p>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Status filter */}
-        <div className="flex items-center gap-0.5 border border-gray-200 rounded-md p-0.5 bg-white">
-          {STATUSES.map((s) => (
-            <button
-              key={s.value}
-              onClick={() => setStatus(s.value)}
-              className={`px-2.5 py-1 rounded text-xs transition outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 ${status === s.value ? "bg-primary text-primary-foreground font-semibold" : "text-gray-500 hover:bg-gray-50"}`}
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Search */}
-        <div className="flex items-center gap-1.5 border border-gray-200 rounded-md px-2.5 py-1.5 bg-white flex-1 min-w-[180px] max-w-xs">
-          <Search className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search invoice, customer..."
-            className="text-xs flex-1 outline-none text-gray-700 placeholder-gray-400 bg-transparent"
-          />
-          {search && (
-            <button onClick={() => setSearch("")}>
-              <X className="h-3 w-3 text-gray-400 hover:text-gray-600" />
-            </button>
-          )}
-        </div>
-
-        {filtersActive && (
-          <button
-            onClick={clearFilters}
-            className="text-xs text-gray-400 hover:text-gray-600 transition flex items-center gap-1"
-          >
-            <X className="h-3 w-3" /> Clear
-          </button>
-        )}
-      </div>
 
       {/* Mobile card list — a table of 10 columns doesn't fit a phone;
           this is the same data as one tappable card per invoice instead. */}
@@ -351,165 +336,136 @@ function SalesPage() {
       </div>
 
       {/* Table (desktop) */}
-      <div className="hidden md:block flex-1 overflow-auto">
-        <table className="w-full min-w-[960px] text-[13px] border-collapse">
-          <thead className="sticky top-0 bg-white border-b z-10">
-            <tr>
-              <Th>Invoice #</Th>
-              <Th>Date</Th>
-              <Th>Customer</Th>
-              <Th align="right">Items</Th>
-              <Th align="right">Total Amount</Th>
-              <Th align="right">Paid</Th>
-              <Th align="right">Balance</Th>
-              <Th>Status</Th>
-              <Th>Mode</Th>
-              <Th align="center">Action</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.length === 0 ? (
-              <tr>
-                <td colSpan={10} className="text-center py-16 text-gray-400">
-                  <FileText className="h-10 w-10 mx-auto mb-3 text-gray-200" />
-                  <p className="font-medium">No invoices found</p>
-                  <p className="text-xs mt-1">Try adjusting filters or add a new sale</p>
-                </td>
-              </tr>
-            ) : (
-              pg.paged.map((r) => {
+      <div className="hidden md:flex flex-1 min-h-0 p-6">
+        <DataTable
+          activateOnClick
+          columns={[
+            {
+              key: "number",
+              label: "Invoice #",
+              render: (r) => <span className="font-mono">{r.number}</span>,
+              sortValue: (r) => r.number,
+            },
+            { key: "date", label: "Date", render: (r) => fmtDate(r.date), sortValue: (r) => r.date },
+            {
+              key: "customer",
+              label: "Customer",
+              render: (r) => <span className="max-w-[160px] truncate block">{r.partyName}</span>,
+              sortValue: (r) => r.partyName,
+            },
+            {
+              key: "items",
+              label: "Items",
+              align: "right",
+              render: (r) => r.lineItems.length,
+              sortValue: (r) => r.lineItems.length,
+            },
+            {
+              key: "total",
+              label: "Total Amount",
+              align: "right",
+              render: (r) => <span className="tabular-nums">{fmtMoney(r.total)}</span>,
+              sortValue: (r) => r.total,
+            },
+            {
+              key: "paid",
+              label: "Paid",
+              align: "right",
+              render: (r) => <span className="tabular-nums">{fmtMoney(r.paid)}</span>,
+              sortValue: (r) => r.paid,
+            },
+            {
+              key: "balance",
+              label: "Balance",
+              align: "right",
+              render: (r) => {
                 const balance = Math.round((r.total - r.paid) * 100) / 100;
-                const isPaid = balance <= 0;
-                const isUnpaid = r.paid === 0 && r.total > 0;
-                const isPartial = r.paid > 0 && balance > 0;
                 return (
-                  <tr
-                    key={r.id}
-                    onClick={() => navigate({ to: "/sales/$id", params: { id: r.id } })}
-                    className="border-b border-gray-100 hover:bg-primary/5 transition-colors cursor-pointer group"
-                  >
-                    <td className="px-4 py-3 font-mono font-semibold text-blue-600 text-xs">
-                      {r.number}
-                    </td>
-                    <td className="px-4 py-3 text-gray-600">{fmtDate(r.date)}</td>
-                    <td className="px-4 py-3 font-medium text-gray-800 max-w-[160px] truncate">
-                      {r.partyName}
-                    </td>
-                    <td className="px-4 py-3 text-right text-gray-500">{r.lineItems.length}</td>
-                    <td className="px-4 py-3 text-right font-semibold text-gray-800 tabular-nums">
-                      {fmtMoney(r.total)}
-                    </td>
-                    <td className="px-4 py-3 text-right text-emerald-600 font-medium tabular-nums">
-                      {fmtMoney(r.paid)}
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums">
-                      <span
-                        className={balance > 0 ? "text-rose-600 font-semibold" : "text-gray-400"}
-                      >
-                        {fmtMoney(Math.max(0, balance))}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <StatusBadge paid={isPaid} partial={isPartial} unpaid={isUnpaid} />
-                    </td>
-                    <td className="px-4 py-3 text-gray-500 text-xs">{fmtMode(r.paymentMode)}</td>
-                    <td className="px-4 py-3 text-center whitespace-nowrap">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          navigate({ to: "/sales/edit/$id", params: { id: r.id } });
-                        }}
-                        className="p-1 rounded hover:bg-blue-50 text-gray-400 hover:text-blue-600 transition"
-                        title="Edit invoice"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDelete(r);
-                        }}
-                        className="p-1 rounded hover:bg-rose-50 text-gray-400 hover:text-rose-500 transition"
-                        title="Delete invoice"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </td>
-                  </tr>
+                  <span className="tabular-nums">
+                    {fmtMoney(Math.max(0, balance))}
+                  </span>
                 );
-              })
-            )}
-          </tbody>
-          {filtered.length > 0 && (
-            <tfoot className="sticky bottom-0 bg-gray-50 border-t-2 border-gray-200">
-              <tr>
-                <td
-                  colSpan={4}
-                  className="px-4 py-3 text-xs font-bold text-gray-500 uppercase tracking-wide"
-                >
-                  Total ({filtered.length} invoices)
-                </td>
-                <td className="px-4 py-3 text-right font-bold text-gray-800 tabular-nums text-sm">
-                  {fmtMoney(totalAmount)}
-                </td>
-                <td className="px-4 py-3 text-right font-bold text-emerald-600 tabular-nums text-sm">
-                  {fmtMoney(totalPaid)}
-                </td>
-                <td className="px-4 py-3 text-right font-bold text-rose-600 tabular-nums text-sm">
-                  {fmtMoney(totalBalance)}
-                </td>
-                <td colSpan={3} />
-              </tr>
-            </tfoot>
-          )}
-        </table>
+              },
+              sortValue: (r) => Math.max(0, Math.round((r.total - r.paid) * 100) / 100),
+            },
+            {
+              key: "status",
+              label: "Status",
+              render: (r) => {
+                const balance = Math.round((r.total - r.paid) * 100) / 100;
+                return (
+                  <StatusBadge
+                    paid={balance <= 0}
+                    partial={r.paid > 0 && balance > 0}
+                    unpaid={r.paid === 0 && r.total > 0}
+                  />
+                );
+              },
+            },
+            {
+              key: "mode",
+              label: "Mode",
+              render: (r) => fmtMode(r.paymentMode),
+            },
+            {
+              key: "action",
+              label: "Action",
+              align: "center",
+              render: (r) => (
+                <span className="whitespace-nowrap">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigate({ to: "/sales/edit/$id", params: { id: r.id } });
+                    }}
+                    className="p-1 rounded hover:bg-blue-50 text-gray-400 hover:text-blue-600 transition"
+                    title="Edit invoice"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDelete(r);
+                    }}
+                    className="p-1 rounded hover:bg-rose-50 text-gray-400 hover:text-rose-500 transition"
+                    title="Delete invoice"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </span>
+              ),
+            },
+          ]}
+          rows={filtered}
+          rowKey={(r) => r.id}
+          onRowActivate={(r) => navigate({ to: "/sales/$id", params: { id: r.id } })}
+          emptyMessage="No invoices found — try adjusting filters or add a new sale"
+          footer={
+            <tr>
+              <td colSpan={4}>Total ({filtered.length} invoices)</td>
+              <td className="text-right tabular-nums">{fmtMoney(totalAmount)}</td>
+              <td className="text-right tabular-nums">{fmtMoney(totalPaid)}</td>
+              <td className="text-right tabular-nums">{fmtMoney(totalBalance)}</td>
+              <td colSpan={3} />
+            </tr>
+          }
+        />
       </div>
-      <PaginationBar
-        page={pg.page}
-        totalPages={pg.totalPages}
-        pageSize={pg.pageSize}
-        total={pg.total}
-        onPage={pg.setPage}
-        onPageSize={pg.setPageSize}
-      />
+      <div className="md:hidden">
+        <PaginationBar
+          page={pg.page}
+          totalPages={pg.totalPages}
+          pageSize={pg.pageSize}
+          total={pg.total}
+          onPage={pg.setPage}
+          onPageSize={pg.setPageSize}
+        />
+      </div>
     </div>
   );
 }
 
-const SALES_TONES = {
-  gray: { bg: "bg-gray-100", text: "text-gray-700" },
-  emerald: { bg: "bg-emerald-50", text: "text-emerald-600" },
-  rose: { bg: "bg-rose-50", text: "text-rose-600" },
-} as const;
-
-function SalesCard({
-  icon: Icon,
-  label,
-  value,
-  tone,
-}: {
-  icon: LucideIcon;
-  label: string;
-  value: number;
-  tone: keyof typeof SALES_TONES;
-}) {
-  const t = SALES_TONES[tone];
-  return (
-    <div className="shrink-0 flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border border-gray-100 bg-white">
-      <div className={`h-8 w-8 rounded-md flex items-center justify-center shrink-0 ${t.bg} ${t.text}`}>
-        <Icon className="h-4 w-4" />
-      </div>
-      <div className="min-w-0">
-        <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wide mb-0.5 whitespace-nowrap">
-          {label}
-        </p>
-        <p className={`text-[14px] font-bold tabular-nums whitespace-nowrap ${t.text}`}>
-          {fmtMoney(value)}
-        </p>
-      </div>
-    </div>
-  );
-}
 
 function StatusBadge({
   paid,
@@ -520,40 +476,9 @@ function StatusBadge({
   partial: boolean;
   unpaid: boolean;
 }) {
-  if (paid)
-    return (
-      <span className="inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200">
-        Paid
-      </span>
-    );
-  if (partial)
-    return (
-      <span className="inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600 border border-amber-200">
-        Partial
-      </span>
-    );
-  if (unpaid)
-    return (
-      <span className="inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full bg-rose-50 text-rose-600 border border-rose-200">
-        Unpaid
-      </span>
-    );
+  if (paid) return "Paid";
+  if (partial) return "Partial";
+  if (unpaid) return "Unpaid";
   return null;
 }
 
-function Th({
-  children,
-  align,
-}: {
-  children: React.ReactNode;
-  align?: "left" | "right" | "center";
-}) {
-  return (
-    <th
-      className="px-4 py-2.5 text-[11px] font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-100 whitespace-nowrap bg-white"
-      style={{ textAlign: align ?? "left" }}
-    >
-      {children}
-    </th>
-  );
-}

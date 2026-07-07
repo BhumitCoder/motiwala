@@ -11,7 +11,6 @@ import { Field } from "@/components/Field";
 import { NumField } from "@/components/NumInput";
 import { fmtMoney, today } from "@/lib/format";
 import { downloadCsv, parseCsv } from "@/lib/csv";
-import * as XLSX from "xlsx";
 import {
   Plus,
   Search,
@@ -253,8 +252,7 @@ function ItemsPage() {
                 setOpen(true);
               }}
             >
-              <Plus className="h-3.5 w-3.5" /> New Item{" "}
-              <kbd className="hidden sm:inline text-[10px] ml-1">N</kbd>
+              <Plus className="h-3.5 w-3.5" /> New Item
             </Button>
           </>
         }
@@ -287,11 +285,12 @@ function ItemsPage() {
           </div>
         </div>
       )}
-      <div className="p-3 flex-1 min-h-0 flex">
+      <div className="p-6 flex-1 min-h-0 flex">
         <DataTable
           columns={columns}
           rows={filtered}
           rowKey={(r) => r.id}
+          activateOnClick
           onRowActivate={(r) => navigate({ to: "/items/$id", params: { id: r.id } })}
           onDelete={(r) => {
             if (confirm(`Delete ${r.name}?`)) {
@@ -955,6 +954,8 @@ function BulkImportDialog({
       // Real Excel workbook, not CSV text — read via the same xlsx library
       // already used for exports, take the first sheet, cells as strings so
       // downstream parsing (num(), trim()) matches the CSV path exactly.
+      // Loaded on demand — xlsx is ~400KB and only this import flow needs it.
+      const XLSX = await import("xlsx");
       const wb = XLSX.read(buf, { type: "array" });
       const sheet = wb.Sheets[wb.SheetNames[0]];
       table = (XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" }) as unknown[][]).map(
@@ -1085,14 +1086,14 @@ function BulkImportDialog({
               </div>
               <div className="border rounded max-h-80 overflow-auto">
                 <table className="w-full text-sm">
-                  <thead className="bg-muted sticky top-0">
+                  <thead>
                     <tr>
-                      <th className="text-left p-1.5">Row</th>
-                      <th className="text-left p-1.5">Name</th>
-                      <th className="text-left p-1.5">Category</th>
-                      <th className="text-right p-1.5">Sale Price</th>
-                      <th className="text-right p-1.5">Opening Stock</th>
-                      <th className="text-left p-1.5">Status</th>
+                      <th className="sticky top-0 z-10 bg-muted text-left p-1.5">Row</th>
+                      <th className="sticky top-0 z-10 bg-muted text-left p-1.5">Name</th>
+                      <th className="sticky top-0 z-10 bg-muted text-left p-1.5">Category</th>
+                      <th className="sticky top-0 z-10 bg-muted text-right p-1.5">Sale Price</th>
+                      <th className="sticky top-0 z-10 bg-muted text-right p-1.5">Opening Stock</th>
+                      <th className="sticky top-0 z-10 bg-muted text-left p-1.5">Status</th>
                     </tr>
                   </thead>
                   <tbody>

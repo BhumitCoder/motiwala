@@ -91,6 +91,12 @@ const groups: NavGroup[] = [
   { title: "System", items: [{ path: "/settings", label: "Settings", icon: Settings, key: "8" }] },
 ];
 
+// Plain startsWith("/purchase") also matches "/purchase-return" — require a
+// "/" boundary after the prefix so sibling routes with a shared prefix
+// (purchase vs. purchase-return, sale vs. sale-return) don't both light up.
+const matchesPath = (pathname: string, path: string) =>
+  path === "/" ? pathname === "/" : pathname === path || pathname.startsWith(`${path}/`);
+
 export function Sidebar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const collapsed = useWorkspace((s) => s.sidebarCollapsed);
@@ -108,8 +114,7 @@ export function Sidebar() {
     setOpenGroups((prev) => ({ ...prev, [title]: !prev[title] }));
 
   // Auto-expand group if the active route belongs to it
-  const isGroupActive = (g: NavGroup) =>
-    g.items.some((it) => it.path === pathname || (it.path !== "/" && pathname.startsWith(it.path)));
+  const isGroupActive = (g: NavGroup) => g.items.some((it) => matchesPath(pathname, it.path));
 
   return (
     <>
@@ -128,118 +133,116 @@ export function Sidebar() {
           collapsed && "md:w-14",
         )}
       >
-      {/* Brand */}
-      <div className="h-14 flex items-center gap-2.5 bg-gradient-brand text-brand-foreground shrink-0 px-3">
-        <div className="h-8 w-8 rounded-md bg-white/15 backdrop-blur flex items-center justify-center ring-1 ring-white/20 shrink-0">
-          <Sparkles className="h-4 w-4" />
-        </div>
-        {!collapsed && (
-          <div className="flex flex-col leading-tight overflow-hidden">
-            <span className="font-bold tracking-tight text-[15px]">BizDesk</span>
-            <span className="text-[10px] uppercase tracking-widest opacity-80">
-              Billing · Inventory
-            </span>
+        {/* Brand */}
+        <div className="h-14 flex items-center gap-2.5 bg-sidebar border-b border-sidebar-border shrink-0 px-3">
+          <div className="h-8 w-8 rounded-md bg-primary-soft text-primary flex items-center justify-center ring-1 ring-primary/10 shrink-0">
+            <Sparkles className="h-4 w-4" />
           </div>
-        )}
-      </div>
+          {!collapsed && (
+            <div className="flex flex-col leading-tight overflow-hidden">
+              <span className="font-bold tracking-tight text-[15px] text-sidebar-foreground">
+                AIM
+              </span>
+              <span className="text-[10px] uppercase tracking-widest text-sidebar-muted">
+                Billing · Inventory
+              </span>
+            </div>
+          )}
+        </div>
 
-      <nav className="flex-1 overflow-y-auto overflow-x-hidden py-2 text-[13px]">
-        {groups.map((g) => {
-          const active = isGroupActive(g);
-          const isOpen = g.collapsible ? openGroups[g.title] || active : true;
+        <nav className="flex-1 overflow-y-auto overflow-x-hidden py-2 text-[13px]">
+          {groups.map((g) => {
+            const active = isGroupActive(g);
+            const isOpen = g.collapsible ? openGroups[g.title] || active : true;
 
-          return (
-            <div key={g.title} className="mb-1">
-              {!collapsed &&
-                (g.collapsible ? (
-                  <button
-                    onClick={() => toggleGroup(g.title)}
-                    className={cn(
-                      "w-full flex items-center justify-between px-4 pt-2.5 pb-1.5 text-[10px] font-semibold uppercase tracking-wider transition-colors",
-                      active ? "text-primary" : "text-sidebar-muted hover:text-sidebar-foreground",
-                    )}
-                  >
-                    <span>{g.title}</span>
-                    {isOpen && !active ? (
-                      <ChevronDown className="h-3 w-3 opacity-60" />
-                    ) : (
-                      <ChevronRight className="h-3 w-3 opacity-60" />
-                    )}
-                  </button>
-                ) : (
-                  <div className="px-4 pt-2.5 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-sidebar-muted">
-                    {g.title}
-                  </div>
-                ))}
-              {collapsed && <div className="mx-3 my-1.5 border-t border-sidebar-border" />}
-
-              {(collapsed || isOpen) &&
-                g.items.map((it) => {
-                  const itemActive =
-                    pathname === it.path || (it.path !== "/" && pathname.startsWith(it.path));
-                  const Icon = it.icon;
-                  return (
-                    <Link
-                      key={it.path}
-                      to={it.path}
-                      onClick={() => setMobileNavOpen(false)}
-                      title={collapsed ? it.label : undefined}
+            return (
+              <div key={g.title} className="mb-1">
+                {!collapsed &&
+                  (g.collapsible ? (
+                    <button
+                      onClick={() => toggleGroup(g.title)}
                       className={cn(
-                        "group flex items-center gap-2.5 py-2 border-l-[3px] border-transparent transition-colors",
-                        collapsed ? "px-3 justify-center" : "px-4",
-                        "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-                        itemActive &&
-                        "bg-sidebar-accent text-sidebar-accent-foreground border-primary font-semibold",
+                        "w-full flex items-center justify-between px-4 pt-2.5 pb-1.5 text-[10px] font-semibold uppercase tracking-wider transition-colors",
+                        active ? "text-primary" : "text-sidebar-muted hover:text-sidebar-foreground",
                       )}
                     >
-                      <Icon
-                        className={cn(
-                          "h-4 w-4 shrink-0",
-                          itemActive ? "opacity-100" : "opacity-70 group-hover:opacity-100",
-                        )}
-                      />
-                      {!collapsed && <span className="flex-1 truncate">{it.label}</span>}
-                      {!collapsed && it.key && (
-                        <kbd className="text-[9px] opacity-60 font-mono">Alt+{it.key}</kbd>
+                      <span>{g.title}</span>
+                      {isOpen && !active ? (
+                        <ChevronDown className="h-3 w-3 opacity-60" />
+                      ) : (
+                        <ChevronRight className="h-3 w-3 opacity-60" />
                       )}
-                    </Link>
-                  );
-                })}
-            </div>
-          );
-        })}
-      </nav>
+                    </button>
+                  ) : (
+                    <div className="px-4 pt-2.5 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-sidebar-muted">
+                      {g.title}
+                    </div>
+                  ))}
+                {collapsed && <div className="mx-3 my-1.5 border-t border-sidebar-border" />}
 
-      {/* Logout — mobile drawer only; desktop keeps it in the Topbar */}
-      <button
-        onClick={async () => {
-          if (!confirm("Logout from BizDesk?")) return;
-          try {
-            stopRepos();
-            await signOut(auth);
-          } catch {
-            toast.error("Logout failed — check your connection");
-          }
-        }}
-        className="md:hidden border-t border-sidebar-border h-11 flex items-center justify-center gap-2 text-[12px] font-medium text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition"
-      >
-        <LogOut className="h-4 w-4" /> Logout
-      </button>
+                {(collapsed || isOpen) &&
+                  g.items.map((it) => {
+                    const itemActive = matchesPath(pathname, it.path);
+                    const Icon = it.icon;
+                    return (
+                      <Link
+                        key={it.path}
+                        to={it.path}
+                        onClick={() => setMobileNavOpen(false)}
+                        title={collapsed ? it.label : undefined}
+                        className={cn(
+                          "group flex items-center gap-2.5 py-2 border-l-[3px] border-transparent transition-colors",
+                          collapsed ? "px-3 justify-center" : "px-4",
+                          "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                          itemActive &&
+                          "bg-sidebar-accent text-sidebar-accent-foreground border-primary font-semibold",
+                        )}
+                      >
+                        <Icon
+                          className={cn(
+                            "h-4 w-4 shrink-0",
+                            itemActive ? "opacity-100" : "opacity-70 group-hover:opacity-100",
+                          )}
+                        />
+                        {!collapsed && <span className="flex-1 truncate">{it.label}</span>}
+                      </Link>
+                    );
+                  })}
+              </div>
+            );
+          })}
+        </nav>
 
-      <button
-        onClick={toggle}
-        className="hidden md:flex border-t border-sidebar-border h-10 items-center justify-center gap-2 text-[11px] text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition"
-        title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-      >
-        {collapsed ? (
-          <ChevronsRight className="h-4 w-4" />
-        ) : (
-          <>
-            <ChevronsLeft className="h-4 w-4" />
-            <span>Collapse</span>
-          </>
-        )}
-      </button>
+        {/* Logout — mobile drawer only; desktop keeps it in the Topbar */}
+        <button
+          onClick={async () => {
+            if (!confirm("Logout from AIM?")) return;
+            try {
+              stopRepos();
+              await signOut(auth);
+            } catch {
+              toast.error("Logout failed — check your connection");
+            }
+          }}
+          className="md:hidden border-t border-sidebar-border h-11 flex items-center justify-center gap-2 text-[12px] font-medium text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition"
+        >
+          <LogOut className="h-4 w-4" /> Logout
+        </button>
+
+        <button
+          onClick={toggle}
+          className="hidden md:flex border-t border-sidebar-border h-10 items-center justify-center gap-2 text-[11px] text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition"
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          {collapsed ? (
+            <ChevronsRight className="h-4 w-4" />
+          ) : (
+            <>
+              <ChevronsLeft className="h-4 w-4" />
+              <span>Collapse</span>
+            </>
+          )}
+        </button>
       </aside>
     </>
   );

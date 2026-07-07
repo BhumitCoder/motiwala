@@ -17,6 +17,7 @@ import { buildBankLedger, paidViaPayments } from "@/lib/ledger";
 import { fmtMoney, fmtDate, today, ymd } from "@/lib/format";
 import { printWithName } from "@/lib/print";
 import { downloadElementAsPdf, shareElementAsPdf } from "@/lib/pdf";
+import { usePagination, PaginationBar } from "@/components/Pagination";
 import { downloadCsv } from "@/lib/csv";
 import { fmtMode } from "@/components/ModePills";
 import {
@@ -33,8 +34,6 @@ import {
   TrendingDown,
   Wallet,
   Landmark,
-  ArrowDownCircle,
-  ArrowUpCircle,
   FileDown,
   Share2,
 } from "lucide-react";
@@ -236,6 +235,12 @@ function DaybookPage() {
   const totalMoneyOut = Math.abs(
     rows.filter((r) => r.cash < 0).reduce((s, r) => s + r.cash, 0),
   );
+
+  // Page size deliberately generous (100, vs. the usual 25/50) — this table
+  // is also the exact snapshot the PDF/print export captures, so pagination
+  // must never silently cut a busy day's transactions out of that export. A
+  // single day realistically never gets close to 100 entries for this app.
+  const pg = usePagination(filteredRows, 100);
 
   const shiftDay = (delta: number) => {
     const [y, m, dd] = date.split("-").map(Number);
@@ -459,18 +464,18 @@ function DaybookPage() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto">
-        <div ref={printRef} className="print-visible bg-white print:p-6">
-          <div className="overflow-x-auto">
-            <table className="w-full text-[12.5px] border-collapse min-w-max">
+      <div className="p-6 flex-1 min-h-0 flex">
+        <div
+          ref={printRef}
+          className="print-visible flex-1 min-h-0 flex flex-col bg-white border border-gray-200/80 rounded-xl shadow-card overflow-hidden print:shadow-none print:border-none print:rounded-none print:p-6"
+        >
+          <div className="data-table flex-1 overflow-auto">
+            <table className="w-full min-w-max text-[12.5px]">
               <thead>
-                <tr className="bg-gray-50">
+                <tr>
                   {["#", "Name", "Ref No", "Type", "Payment Type", "Total", "Money In", "Money Out"].map(
                     (h, i) => (
-                      <th
-                        key={h}
-                        className={`px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-gray-500 border-b border-gray-200 whitespace-nowrap ${i >= 5 ? "text-right" : "text-left"}`}
-                      >
+                      <th key={h} style={{ textAlign: i >= 5 ? "right" : "left" }}>
                         {h}
                       </th>
                     ),
@@ -478,75 +483,63 @@ function DaybookPage() {
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.length === 0 ? (
+                {pg.paged.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="text-center py-14 text-gray-400">
                       {rows.length === 0 ? "No transactions on this day" : "No matches for your search"}
                     </td>
                   </tr>
                 ) : (
-                  filteredRows.map((r, i) => (
+                  pg.paged.map((r, i) => (
                     <tr
                       key={i}
                       onClick={() => openRow(r)}
                       title={r.docId ? "Open this bill" : undefined}
-                      className={`border-b border-gray-100 hover:bg-gray-50/60 ${r.docId ? "cursor-pointer" : ""}`}
+                      className={r.docId ? "cursor-pointer" : ""}
                     >
-                      <td className="px-4 py-2.5 text-gray-400 text-[11px] whitespace-nowrap">{i + 1}</td>
-                      <td className="px-4 py-2.5 font-medium text-gray-800 whitespace-nowrap">
-                        {r.party}
+                      <td className="text-gray-400 text-[11px]">
+                        {(pg.page - 1) * pg.pageSize + i + 1}
                       </td>
-                      <td className="px-4 py-2.5 font-mono text-xs text-gray-600 whitespace-nowrap">
-                        {r.ref}
-                      </td>
-                      <td className="px-4 py-2.5 font-semibold text-gray-700 whitespace-nowrap">
-                        {r.type}
-                      </td>
-                      <td className="px-4 py-2.5 text-gray-500 text-xs whitespace-nowrap">
-                        {modeLabel(r)}
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-semibold text-gray-800 tabular-nums whitespace-nowrap">
-                        {fmtMoney(Math.abs(r.amount))}
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-semibold text-emerald-600 tabular-nums whitespace-nowrap">
+                      <td>{r.party}</td>
+                      <td className="font-mono text-xs">{r.ref}</td>
+                      <td>{r.type}</td>
+                      <td className="text-gray-500 text-xs">{modeLabel(r)}</td>
+                      <td className="text-right tabular-nums">{fmtMoney(Math.abs(r.amount))}</td>
+                      <td className="text-right tabular-nums">
                         {r.cash > 0 ? fmtMoney(r.cash) : "—"}
                       </td>
-                      <td className="px-4 py-2.5 text-right font-semibold text-rose-600 tabular-nums whitespace-nowrap">
+                      <td className="text-right tabular-nums">
                         {r.cash < 0 ? fmtMoney(Math.abs(r.cash)) : "—"}
                       </td>
                     </tr>
                   ))
                 )}
               </tbody>
+              {filteredRows.length > 0 && (
+                <tfoot>
+                  <tr>
+                    <td colSpan={5}>Total ({filteredRows.length} transactions)</td>
+                    <td className="text-right tabular-nums">{fmtMoney(net)}</td>
+                    <td className="text-right tabular-nums">{fmtMoney(totalMoneyIn)}</td>
+                    <td className="text-right tabular-nums">{fmtMoney(totalMoneyOut)}</td>
+                  </tr>
+                </tfoot>
+              )}
             </table>
+          </div>
+          <div className="no-print">
+            <PaginationBar
+              page={pg.page}
+              totalPages={pg.totalPages}
+              pageSize={pg.pageSize}
+              total={pg.total}
+              onPage={pg.setPage}
+              onPageSize={pg.setPageSize}
+            />
           </div>
         </div>
       </div>
 
-      {rows.length > 0 && (
-        <div className="no-print bg-gray-50 border-t px-5 py-3 flex items-center justify-end gap-3 flex-wrap">
-          <TotalPill
-            icon={<ArrowDownCircle className="h-4 w-4" />}
-            label="Total Money-In"
-            value={totalMoneyIn}
-            tone="emerald"
-          />
-          <TotalPill
-            icon={<ArrowUpCircle className="h-4 w-4" />}
-            label="Total Money-Out"
-            value={totalMoneyOut}
-            tone="rose"
-          />
-          <TotalPill
-            icon={net >= 0 ? <TrendingUp className="h-4 w-4" /> : <TrendingDown className="h-4 w-4" />}
-            label="Net for the Day"
-            value={net}
-            tone={net >= 0 ? "emerald" : "rose"}
-            signed
-            emphasized
-          />
-        </div>
-      )}
     </div>
   );
 }
@@ -636,40 +629,3 @@ function AccountCard({
   );
 }
 
-function TotalPill({
-  icon,
-  label,
-  value,
-  tone,
-  signed,
-  emphasized,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: number;
-  tone: keyof typeof TONES;
-  signed?: boolean;
-  emphasized?: boolean;
-}) {
-  const t = TONES[tone];
-  return (
-    <div
-      className={`shrink-0 flex items-center gap-2.5 px-4 py-2.5 rounded-lg border bg-white ${
-        emphasized ? "border-primary/20 shadow-sm" : "border-gray-200"
-      }`}
-    >
-      <div className={`h-9 w-9 rounded-full flex items-center justify-center shrink-0 ${t.bg} ${t.text}`}>
-        {icon}
-      </div>
-      <div className="min-w-0">
-        <p className="text-[10px] text-gray-400 font-semibold uppercase tracking-wide mb-0.5 whitespace-nowrap">
-          {label}
-        </p>
-        <p className={`text-[16px] font-bold tabular-nums whitespace-nowrap ${t.text}`}>
-          {signed && value < 0 ? "−" : ""}
-          {fmtMoney(Math.abs(value))}
-        </p>
-      </div>
-    </div>
-  );
-}

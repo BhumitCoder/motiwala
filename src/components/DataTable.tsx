@@ -18,6 +18,13 @@ interface Props<T> {
   onRowActivate?: (row: T) => void;
   onDelete?: (row: T) => void;
   emptyMessage?: string;
+  /** A <tr> of totals rendered in a <tfoot> below the rows — e.g. "Total: ₹X". */
+  footer?: ReactNode;
+  /** Activate a row on a single click instead of the default double-click —
+   * for pages (Sales, Purchase, Cash) where the row's whole purpose is to
+   * open a bill, vs. Items/Parties where a click just selects a record to
+   * inspect further with Edit/Delete. */
+  activateOnClick?: boolean;
 }
 
 export function DataTable<T>({
@@ -27,10 +34,14 @@ export function DataTable<T>({
   onRowActivate,
   onDelete,
   emptyMessage,
+  footer,
+  activateOnClick,
 }: Props<T>) {
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-  const [selectedIdx, setSelectedIdx] = useState(0);
+  // -1 = nothing selected — a row should only highlight once the user
+  // actually clicks or arrows onto it, not as a default on every load.
+  const [selectedIdx, setSelectedIdx] = useState(-1);
   const tableRef = useRef<HTMLDivElement>(null);
 
   const sorted = [...rows];
@@ -51,7 +62,7 @@ export function DataTable<T>({
   const paged = pg.paged;
 
   useEffect(() => {
-    if (selectedIdx >= paged.length) setSelectedIdx(Math.max(0, paged.length - 1));
+    if (selectedIdx >= paged.length) setSelectedIdx(-1);
   }, [paged.length, selectedIdx]);
 
   // The "selected" row is tracked by numeric index into `paged` — if that
@@ -59,7 +70,7 @@ export function DataTable<T>({
   // (Enter, Ctrl+Delete) silently act on whatever record now sits at the
   // same position instead of the row the user actually selected.
   useEffect(() => {
-    setSelectedIdx(0);
+    setSelectedIdx(-1);
   }, [sortKey, sortDir, pg.page]);
 
   const onKey = (e: React.KeyboardEvent) => {
@@ -89,7 +100,7 @@ export function DataTable<T>({
   };
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col border rounded-md bg-card overflow-hidden">
+    <div className="flex-1 min-h-0 flex flex-col border border-gray-200/80 rounded-xl shadow-card bg-card overflow-hidden">
       <div
         ref={tableRef}
         tabIndex={0}
@@ -126,7 +137,10 @@ export function DataTable<T>({
                 <tr
                   key={rowKey(row)}
                   data-selected={i === selectedIdx}
-                  onClick={() => setSelectedIdx(i)}
+                  onClick={() => {
+                    setSelectedIdx(i);
+                    if (activateOnClick) onRowActivate?.(row);
+                  }}
                   onDoubleClick={() => onRowActivate?.(row)}
                   className="cursor-pointer"
                 >
@@ -139,6 +153,7 @@ export function DataTable<T>({
               ))
             )}
           </tbody>
+          {footer && paged.length > 0 && <tfoot>{footer}</tfoot>}
         </table>
       </div>
       <PaginationBar

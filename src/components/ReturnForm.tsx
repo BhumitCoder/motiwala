@@ -397,7 +397,6 @@ export function ReturnForm({ mode }: Props) {
               <Save className="h-3.5 w-3.5" />
             )}
             {saving ? "Saving…" : "Save"}
-            {!saving && <kbd className="ml-1 text-[10px] opacity-80">Ctrl+S</kbd>}
           </Button>
         </div>
       </div>

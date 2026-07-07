@@ -33,6 +33,7 @@ import {
   FileDown,
   Share2,
   Search,
+  Calendar,
 } from "lucide-react";
 
 export const Route = createFileRoute("/reports")({
@@ -108,51 +109,51 @@ function ReportsPage() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-[#f5f6fa]">
-      <div className="bg-white border-b px-5 py-3 flex items-center justify-between gap-3 no-print">
-        <div className="flex items-center gap-3">
-          <div className="h-10 w-10 shrink-0 rounded-lg bg-primary-soft text-primary flex items-center justify-center">
-            <BarChart3 className="h-5 w-5" />
-          </div>
+    <div className="flex flex-col h-full bg-[#f7f7f9]">
+      <div className="bg-white border-b px-5 py-3.5 flex items-center justify-between gap-3 flex-wrap no-print">
+        <div className="flex items-center gap-2.5">
+          <BarChart3 className="h-5 w-5 text-primary shrink-0" />
           <div>
-            <h1 className="text-[17px] font-bold text-gray-800">Reports</h1>
-            <p className="text-[12px] text-gray-400">{current?.desc}</p>
+            <h1 className="text-[17px] font-bold text-gray-800 leading-tight">Reports</h1>
+            <p className="text-[12px] text-gray-400 leading-tight">{current?.desc}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <label className="text-xs font-medium text-gray-500">From</label>
-          <input
-            type="date"
-            value={dateFrom}
-            onChange={(e) => setDateFrom(e.target.value)}
-            className="border border-gray-200 rounded-md text-xs px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-200"
-          />
-          <label className="text-xs font-medium text-gray-500">To</label>
-          <input
-            type="date"
-            value={dateTo}
-            onChange={(e) => setDateTo(e.target.value)}
-            className="border border-gray-200 rounded-md text-xs px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-200"
-          />
+          <div className="flex items-center gap-1.5 h-9 pl-3 pr-2.5 rounded-lg border border-gray-200 bg-gray-50/60">
+            <Calendar className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="bg-transparent text-xs text-gray-700 focus:outline-none w-[104px]"
+            />
+            <span className="text-gray-300 text-xs">–</span>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="bg-transparent text-xs text-gray-700 focus:outline-none w-[104px]"
+            />
+          </div>
           <button
             onClick={handleDownloadPdf}
             disabled={pdfBusy !== null}
-            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50"
+            className="h-9 w-9 shrink-0 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 hover:shadow-sm text-gray-600 flex items-center justify-center transition disabled:opacity-50"
             title="Download report as PDF"
           >
-            <FileDown className="h-3.5 w-3.5" />
+            <FileDown className="h-4 w-4" />
           </button>
           <button
             onClick={handleShare}
             disabled={pdfBusy !== null}
-            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50"
+            className="h-9 w-9 shrink-0 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 hover:shadow-sm text-gray-600 flex items-center justify-center transition disabled:opacity-50"
             title="Share report PDF"
           >
-            <Share2 className="h-3.5 w-3.5" />
+            <Share2 className="h-4 w-4" />
           </button>
           <button
             onClick={() => printWithName(reportFilename())}
-            className="inline-flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 rounded-md text-xs font-semibold text-gray-600 hover:bg-gray-50 transition"
+            className="inline-flex items-center gap-1.5 h-9 px-3.5 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-gray-600 hover:bg-gray-50 hover:shadow-sm transition"
             title="Print"
           >
             <Printer className="h-3.5 w-3.5" /> Print
@@ -162,29 +163,27 @@ function ReportsPage() {
 
       <div className="flex-1 flex min-h-0">
         {/* Sidebar */}
-        <aside className="w-52 border-r bg-white overflow-y-auto shrink-0 no-print">
+        <aside className="w-56 border-r bg-white overflow-y-auto shrink-0 no-print p-2">
           {REPORTS.map((r) => {
             const Icon = r.icon;
+            const isActive = active === r.key;
             return (
               <button
                 key={r.key}
                 onClick={() => setActive(r.key)}
-                className={`w-full text-left px-3 py-2.5 border-b border-gray-100 flex items-center gap-2.5 transition ${active === r.key ? "bg-primary/5 border-l-2 border-l-primary font-semibold text-primary" : "hover:bg-gray-50 text-gray-700"}`}
+                className={`w-full text-left mb-0.5 px-3 py-2.5 rounded-lg flex items-center gap-2.5 transition ${isActive ? "bg-primary-soft text-primary font-semibold" : "hover:bg-gray-50 text-gray-600"}`}
               >
                 <Icon
-                  className={`h-3.5 w-3.5 shrink-0 ${active === r.key ? "text-primary" : "text-gray-400"}`}
+                  className={`h-4 w-4 shrink-0 ${isActive ? "text-primary" : "text-gray-400"}`}
                 />
-                <div className="min-w-0">
-                  <p className="text-[12px] truncate">{r.label}</p>
-                  <p className="text-[10px] text-gray-400 truncate hidden">{r.desc}</p>
-                </div>
+                <p className="text-[12.5px] truncate">{r.label}</p>
               </button>
             );
           })}
         </aside>
 
         {/* Report content (print-area so Print/PDF/Share all capture exactly this) */}
-        <div ref={printRef} className="flex-1 overflow-auto p-5 print-visible print:p-6">
+        <div ref={printRef} className="flex-1 overflow-auto p-6 print-visible print:p-6">
           <ReportView which={active} dateFrom={dateFrom} dateTo={dateTo} />
         </div>
       </div>
@@ -859,7 +858,7 @@ function TableReport({
     return (
       <div>
         {label && <h2 className="text-base font-bold text-gray-800 mb-3">{label}</h2>}
-        <div className="bg-white border rounded-lg p-8 text-center text-gray-400">
+        <div className="bg-white border border-gray-200/80 rounded-xl shadow-card p-10 text-center text-gray-400">
           <FileText className="h-8 w-8 mx-auto mb-2 text-gray-200" />
           <p>No data for selected date range</p>
         </div>
@@ -874,22 +873,19 @@ function TableReport({
           <h2 className="text-base font-bold text-gray-800">{label}</h2>
           <button
             onClick={() => downloadCsv(label, cols, rows)}
-            className="no-print inline-flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 rounded-md text-xs font-semibold text-gray-600 hover:bg-gray-50 transition"
+            className="no-print inline-flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-gray-600 hover:bg-gray-50 hover:shadow-sm transition"
           >
             <Download className="h-3.5 w-3.5" /> Export CSV
           </button>
         </div>
       )}
-      <div className="bg-white border rounded-lg shadow-sm overflow-hidden">
-        <div className="overflow-auto max-h-[calc(100vh-300px)]">
-          <table className="w-full text-[12px] border-collapse min-w-max">
-            <thead className="sticky top-0">
-              <tr className="bg-gray-50">
+      <div className="bg-white border border-gray-200/80 rounded-xl shadow-card overflow-hidden">
+        <div className="data-table overflow-auto max-h-[calc(100vh-300px)]">
+          <table className="w-full text-[12.5px] min-w-max">
+            <thead>
+              <tr>
                 {cols.map((c, i) => (
-                  <th
-                    key={c}
-                    className={`px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-gray-500 border-b border-gray-200 whitespace-nowrap ${i > 0 ? "text-right" : "text-left"}`}
-                  >
+                  <th key={c} style={{ textAlign: i > 0 ? "right" : "left" }}>
                     {c}
                   </th>
                 ))}
@@ -897,11 +893,12 @@ function TableReport({
             </thead>
             <tbody>
               {rows.map((row, ri) => (
-                <tr key={ri} className="border-b border-gray-100 hover:bg-gray-50/70">
+                <tr key={ri}>
                   {row.map((cell, ci) => (
                     <td
                       key={ci}
-                      className={`px-4 py-2.5 ${ci === 0 ? "font-medium text-gray-800 text-left" : "text-right text-gray-700 tabular-nums"}`}
+                      style={{ textAlign: ci === 0 ? "left" : "right" }}
+                      className={ci === 0 ? "font-medium text-gray-800" : "text-gray-700 tabular-nums"}
                     >
                       {cell}
                     </td>
@@ -912,10 +909,12 @@ function TableReport({
           </table>
         </div>
         {totalRows.length > 0 && (
-          <div className="border-t-2 border-gray-200 bg-gray-50 px-5 py-3 flex flex-wrap gap-x-8 gap-y-1">
-            {totalRows.map(([k, v]) => (
-              <div key={k} className="flex items-center gap-2">
-                <span className="text-xs font-semibold text-gray-500">{k}:</span>
+          <div className="border-t border-gray-200/80 bg-gray-50/60 px-5 py-3 flex flex-wrap items-center gap-3">
+            {totalRows.map(([k, v], i) => (
+              <div key={i} className="flex items-center gap-3">
+                {i > 0 && <span className="text-gray-300">•</span>}
+                {k && <span className="text-xs font-semibold text-gray-500">{k}</span>}
+                <span className="text-gray-300">|</span>
                 <span className="text-sm font-bold text-gray-800 tabular-nums">{v}</span>
               </div>
             ))}

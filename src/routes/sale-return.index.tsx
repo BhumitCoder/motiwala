@@ -3,9 +3,9 @@ import { useEffect, useState } from "react";
 import { SaleReturnRepo, ItemRepo } from "@/repositories";
 import type { Return } from "@/types";
 import { fmtMoney, fmtDate } from "@/lib/format";
-import { Plus, CornerDownLeft, Trash2, FileText } from "lucide-react";
+import { Plus, CornerDownLeft, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { usePagination, PaginationBar } from "@/components/Pagination";
+import { DataTable } from "@/components/DataTable";
 import { PageHeader } from "@/components/PageHeader";
 
 export const Route = createFileRoute("/sale-return/")({ component: SaleReturnPage });
@@ -17,10 +17,8 @@ function SaleReturnPage() {
   useEffect(refresh, []);
 
   const totalCredit = rows.reduce((s, r) => s + r.total, 0);
-  const pg = usePagination(rows);
 
-  const handleDelete = (e: React.MouseEvent, r: Return) => {
-    e.stopPropagation();
+  const handleDelete = (r: Return) => {
     if (
       !confirm(`Delete return ${r.number}? Returned quantities will be removed from stock again.`)
     )
@@ -51,100 +49,74 @@ function SaleReturnPage() {
         }
       />
 
-      <div className="flex-1 overflow-auto">
-        <table className="w-full min-w-[760px] text-[13px] border-collapse">
-          <thead className="sticky top-0 bg-white border-b z-10">
+      <div className="p-6 flex-1 min-h-0 flex">
+        <DataTable
+          activateOnClick
+          columns={[
+            {
+              key: "number",
+              label: "Credit Note #",
+              render: (r) => <span className="font-mono">{r.number}</span>,
+              sortValue: (r) => r.number,
+            },
+            { key: "date", label: "Date", render: (r) => fmtDate(r.date), sortValue: (r) => r.date },
+            {
+              key: "original",
+              label: "Original Inv #",
+              render: (r) => <span className="font-mono">{r.originalRef || "—"}</span>,
+            },
+            {
+              key: "party",
+              label: "Party",
+              render: (r) => <span className="max-w-[160px] truncate block">{r.partyName}</span>,
+              sortValue: (r) => r.partyName,
+            },
+            {
+              key: "items",
+              label: "Items",
+              align: "right",
+              render: (r) => r.lineItems.length,
+              sortValue: (r) => r.lineItems.length,
+            },
+            { key: "gst", label: "GST", align: "right", render: (r) => (r.gstEnabled ? "Yes" : "No") },
+            {
+              key: "total",
+              label: "Total",
+              align: "right",
+              render: (r) => <span className="tabular-nums">{fmtMoney(r.total)}</span>,
+              sortValue: (r) => r.total,
+            },
+            {
+              key: "action",
+              label: "Action",
+              align: "center",
+              render: (r) => (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDelete(r);
+                  }}
+                  className="p-1 rounded hover:bg-rose-50 text-gray-400 hover:text-rose-500 transition"
+                  title="Delete return"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              ),
+            },
+          ]}
+          rows={rows}
+          rowKey={(r) => r.id}
+          onRowActivate={(r) => navigate({ to: "/sale-return/$id", params: { id: r.id } })}
+          emptyMessage='No sale returns yet — click "New Sale Return" to create a credit note'
+          footer={
             <tr>
-              {[
-                "Credit Note #",
-                "Date",
-                "Original Inv #",
-                "Party",
-                "Items",
-                "GST",
-                "Total",
-                "Action",
-              ].map((h, i) => (
-                <th
-                  key={h}
-                  className={`px-4 py-2.5 text-[11px] font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-100 whitespace-nowrap bg-white ${i >= 4 ? "text-right" : "text-left"} ${h === "Action" ? "text-center" : ""}`}
-                >
-                  {h}
-                </th>
-              ))}
+              <td colSpan={6}>Total ({rows.length} returns)</td>
+              <td className="text-right tabular-nums">{fmtMoney(totalCredit)}</td>
+              <td />
             </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 ? (
-              <tr>
-                <td colSpan={8} className="text-center py-20 text-gray-400">
-                  <FileText className="h-10 w-10 mx-auto mb-3 text-gray-200" />
-                  <p className="font-medium">No sale returns yet</p>
-                  <p className="text-xs mt-1">Click "New Sale Return" to create a credit note</p>
-                </td>
-              </tr>
-            ) : (
-              pg.paged.map((r) => (
-                <tr
-                  key={r.id}
-                  onClick={() => navigate({ to: "/sale-return/$id", params: { id: r.id } })}
-                  className="border-b border-gray-100 hover:bg-primary/5 transition-colors cursor-pointer group"
-                >
-                  <td className="px-4 py-3 font-mono font-semibold text-blue-600 text-xs">
-                    {r.number}
-                  </td>
-                  <td className="px-4 py-3 text-gray-600">{fmtDate(r.date)}</td>
-                  <td className="px-4 py-3 font-mono text-xs text-gray-500">
-                    {r.originalRef || "—"}
-                  </td>
-                  <td className="px-4 py-3 font-medium text-gray-800 max-w-[160px] truncate">
-                    {r.partyName}
-                  </td>
-                  <td className="px-4 py-3 text-right text-gray-500">{r.lineItems.length}</td>
-                  <td className="px-4 py-3 text-right text-gray-500 text-xs">
-                    {r.gstEnabled ? "Yes" : "No"}
-                  </td>
-                  <td className="px-4 py-3 text-right font-semibold text-gray-800 tabular-nums">
-                    {fmtMoney(r.total)}
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    <button
-                      onClick={(e) => handleDelete(e, r)}
-                      className="p-1 rounded hover:bg-rose-50 text-gray-400 hover:text-rose-500 transition"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-          {rows.length > 0 && (
-            <tfoot className="sticky bottom-0 bg-gray-50 border-t-2 border-gray-200">
-              <tr>
-                <td
-                  colSpan={6}
-                  className="px-4 py-3 text-xs font-bold text-gray-500 uppercase tracking-wide"
-                >
-                  Total ({rows.length} returns)
-                </td>
-                <td className="px-4 py-3 text-right font-bold text-gray-800 tabular-nums text-sm">
-                  {fmtMoney(totalCredit)}
-                </td>
-                <td />
-              </tr>
-            </tfoot>
-          )}
-        </table>
+          }
+        />
       </div>
-      <PaginationBar
-        page={pg.page}
-        totalPages={pg.totalPages}
-        pageSize={pg.pageSize}
-        total={pg.total}
-        onPage={pg.setPage}
-        onPageSize={pg.setPageSize}
-      />
     </div>
   );
 }

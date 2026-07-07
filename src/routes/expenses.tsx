@@ -56,7 +56,7 @@ function ExpensesPage() {
         title="Expenses"
         subtitle={`${rows.length} entries · ${fmtMoney(total)} total`}
         icon={<Receipt className="h-5 w-5" />}
-        iconClassName="bg-warning-soft text-warning"
+        iconClassName="text-warning"
         actions={
           <Button
             size="sm"
@@ -69,11 +69,12 @@ function ExpensesPage() {
           </Button>
         }
       />
-      <div className="p-3 flex-1 min-h-0 flex">
+      <div className="p-6 flex-1 min-h-0 flex">
         <DataTable
           columns={columns}
           rows={rows}
           rowKey={(r) => r.id}
+          activateOnClick
           onRowActivate={(r) => {
             setEdit(r);
             setOpen(true);

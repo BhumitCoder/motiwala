@@ -1,5 +1,3 @@
-import * as XLSX from "xlsx";
-
 export interface XlsxSheet {
   name: string;
   rows: (string | number)[][];
@@ -35,7 +33,11 @@ function autoColumnWidths(rows: (string | number)[][]): { wch: number }[] {
   return widths.map((w) => ({ wch: Math.min(42, Math.max(9, w + 2)) }));
 }
 
-export function downloadXlsx(filename: string, sheets: XlsxSheet[]) {
+export async function downloadXlsx(filename: string, sheets: XlsxSheet[]) {
+  // Loaded on demand, not at module scope — xlsx is a ~400KB library that
+  // only export flows need, and eagerly bundling it would slow down the
+  // first load of every page that happens to import this module.
+  const XLSX = await import("xlsx");
   const wb = XLSX.utils.book_new();
   const used = new Set<string>();
   for (const s of sheets) {

@@ -78,7 +78,7 @@ function SettingsPage() {
       const known = Object.keys(REPO_BY_KEY).filter((k) => dump[k] != null);
       const hasCompany = dump["bz.company"] != null;
       if (!known.length && !hasCompany) {
-        toast.error("No BizDesk data found in this file");
+        toast.error("No AIM data found in this file");
         return;
       }
       if (
@@ -103,7 +103,7 @@ function SettingsPage() {
       setTimeout(() => location.reload(), 800);
     } catch {
       setBusy(false);
-      toast.error("Could not read backup file — is it a valid BizDesk backup?");
+      toast.error("Could not read backup file — is it a valid AIM backup?");
     }
   };
 
@@ -203,9 +203,7 @@ function SettingsPage() {
             </div>
           </div>
           <div className="px-5 py-3 border-t bg-gray-50/60 flex justify-end">
-            <Button type="submit">
-              Save <kbd className="ml-1 text-[10px]">Ctrl+S</kbd>
-            </Button>
+            <Button type="submit">Save</Button>
           </div>
         </form>
 

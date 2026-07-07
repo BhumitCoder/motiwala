@@ -53,7 +53,7 @@ export function PaginationBar({
   onPage: (p: number) => void;
   onPageSize: (s: number) => void;
 }) {
-  if (total <= PAGE_SIZES[0]) return null; // nothing to paginate
+  if (total === 0) return null; // nothing at all to report
 
   const from = (page - 1) * pageSize + 1;
   const to = Math.min(total, page * pageSize);

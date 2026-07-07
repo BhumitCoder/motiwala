@@ -17,17 +17,7 @@ import { Field } from "@/components/Field";
 import { NumField } from "@/components/NumInput";
 import { fmtMoney } from "@/lib/format";
 import { partyBalances } from "@/lib/ledger";
-import {
-  Plus,
-  Search,
-  Pencil,
-  FileText,
-  Users,
-  ArrowDownCircle,
-  ArrowUpCircle,
-  AlertTriangle,
-  type LucideIcon,
-} from "lucide-react";
+import { Plus, Search, Pencil, FileText, Users, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/parties")({ component: PartiesPage });
@@ -84,7 +74,7 @@ function PartiesPage() {
     {
       key: "name",
       label: "Name",
-      render: (r) => <span className="font-medium">{r.name}</span>,
+      render: (r) => r.name,
       sortValue: (r) => r.name,
     },
     { key: "phone", label: "Phone", width: "160px", render: (r) => r.phone ?? "—" },
@@ -95,11 +85,7 @@ function PartiesPage() {
       width: "130px",
       render: (r) => {
         const v = receivableByParty.get(r.id) ?? 0;
-        return v > 0 ? (
-          <span className="text-rose-600 font-medium">{fmtMoney(v)}</span>
-        ) : (
-          "—"
-        );
+        return v > 0 ? <span className="tabular-nums">{fmtMoney(v)}</span> : "—";
       },
       sortValue: (r) => receivableByParty.get(r.id) ?? 0,
     },
@@ -110,11 +96,7 @@ function PartiesPage() {
       width: "130px",
       render: (r) => {
         const v = payableByParty.get(r.id) ?? 0;
-        return v > 0 ? (
-          <span className="text-amber-600 font-medium">{fmtMoney(v)}</span>
-        ) : (
-          "—"
-        );
+        return v > 0 ? <span className="tabular-nums">{fmtMoney(v)}</span> : "—";
       },
       sortValue: (r) => payableByParty.get(r.id) ?? 0,
     },
@@ -166,8 +148,6 @@ function PartiesPage() {
         icon={<Users className="h-5 w-5" />}
         actions={
           <>
-            <PartyCard icon={ArrowDownCircle} label="Total Receivable" value={receivable} tone="emerald" />
-            <PartyCard icon={ArrowUpCircle} label="Total Payable" value={payable} tone="rose" />
             <div className="relative w-44 lg:w-56">
               <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
@@ -185,16 +165,25 @@ function PartiesPage() {
                 setOpen(true);
               }}
             >
-              <Plus className="h-3.5 w-3.5" /> New Party <kbd className="text-[10px] ml-1">N</kbd>
+              <Plus className="h-3.5 w-3.5" /> New Party
             </Button>
           </>
         }
       />
-      <div className="p-3 flex-1 min-h-0 flex">
+      <div className="p-6 flex-1 min-h-0 flex">
         <DataTable
           columns={columns}
           rows={filtered}
           rowKey={(r) => r.id}
+          footer={
+            <tr>
+              <td colSpan={2}>Total ({filtered.length} parties)</td>
+              <td className="text-right tabular-nums">{fmtMoney(receivable)}</td>
+              <td className="text-right tabular-nums">{fmtMoney(payable)}</td>
+              <td colSpan={2} />
+            </tr>
+          }
+          activateOnClick
           onRowActivate={(r) => navigate({ to: "/parties/$id", params: { id: r.id } })}
           onDelete={(r) => {
             // A party with any history must never be removable — old
@@ -374,7 +363,7 @@ export function PartyDialog({
               disabled={saving}
               onClick={() => onOpenChange(false)}
             >
-              Cancel <kbd className="ml-1 text-[10px]">Esc</kbd>
+              Cancel
             </Button>
             <Button type="submit" disabled={saving}>
               {saving ? "Saving…" : "Save"}
@@ -383,43 +372,6 @@ export function PartyDialog({
         </form>
       </DialogContent>
     </Dialog>
-  );
-}
-
-const PARTY_TONES = {
-  emerald: { bg: "bg-emerald-50", text: "text-emerald-600" },
-  rose: { bg: "bg-rose-50", text: "text-rose-600" },
-  primary: { bg: "bg-primary-soft", text: "text-primary" },
-} as const;
-
-function PartyCard({
-  icon: Icon,
-  label,
-  value,
-  tone,
-  isCount,
-}: {
-  icon: LucideIcon;
-  label: string;
-  value: number;
-  tone: keyof typeof PARTY_TONES;
-  isCount?: boolean;
-}) {
-  const t = PARTY_TONES[tone];
-  return (
-    <div className="shrink-0 flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border border-gray-100 bg-white">
-      <div className={`h-8 w-8 rounded-md flex items-center justify-center shrink-0 ${t.bg} ${t.text}`}>
-        <Icon className="h-4 w-4" />
-      </div>
-      <div className="min-w-0">
-        <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wide mb-0.5 whitespace-nowrap">
-          {label}
-        </p>
-        <p className={`text-[14px] font-bold tabular-nums whitespace-nowrap ${t.text}`}>
-          {isCount ? value : fmtMoney(value)}
-        </p>
-      </div>
-    </div>
   );
 }
 

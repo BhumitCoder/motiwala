@@ -19,16 +19,12 @@ import {
   Wallet,
   Trash2,
   Search,
-  X,
   CheckCircle2,
   Circle,
   AlertCircle,
   ChevronRight,
   Loader2,
   Pencil,
-  TrendingUp,
-  TrendingDown,
-  type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { genId } from "@/repositories/base";
@@ -139,29 +135,20 @@ function PaymentsPage() {
       key: "type",
       label: "Type",
       width: "120px",
-      render: (r) =>
-        r.type === "in" ? (
-          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-            <ArrowDownCircle className="h-3 w-3" /> Received
-          </span>
-        ) : (
-          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-full border border-rose-200">
-            <ArrowUpCircle className="h-3 w-3" /> Paid Out
-          </span>
-        ),
+      render: (r) => (r.type === "in" ? "Received" : "Paid Out"),
       sortValue: (r) => r.type,
     },
     {
       key: "party",
       label: "Party",
-      render: (r) => <span className="font-medium text-gray-800">{r.partyName}</span>,
+      render: (r) => r.partyName,
       sortValue: (r) => r.partyName,
     },
     {
       key: "linked",
       label: "Linked Invoice / Bill",
       render: (r) => (
-        <span className="font-mono text-xs text-blue-600">
+        <span className="font-mono text-xs">
           {r.allocations?.length ? (
             r.allocations.map((a) => a.number).join(", ")
           ) : r.ref && r.ref.match(/^(INV|PUR)-/) ? (
@@ -176,13 +163,13 @@ function PaymentsPage() {
       key: "mode",
       label: "Mode",
       width: "90px",
-      render: (r) => <span className="text-gray-500 text-xs">{fmtMode(r.mode)}</span>,
+      render: (r) => <span className="text-gray-600">{fmtMode(r.mode)}</span>,
     },
     {
       key: "ref",
       label: "Reference",
       render: (r) => (
-        <span className="font-mono text-xs text-gray-400">
+        <span className="font-mono text-gray-500">
           {r.ref && (r.allocations?.length || !r.ref.match(/^(INV|PUR)-/)) ? r.ref : "—"}
         </span>
       ),
@@ -190,12 +177,10 @@ function PaymentsPage() {
     {
       key: "amount",
       label: "Amount",
-      width: "120px",
+      width: "150px",
       align: "right",
       render: (r) => (
-        <span
-          className={`font-bold tabular-nums ${r.type === "in" ? "text-emerald-600" : "text-rose-600"}`}
-        >
+        <span className="tabular-nums">
           {r.type === "out" ? "−" : "+"}
           {fmtMoney(r.amount)}
         </span>
@@ -242,23 +227,47 @@ function PaymentsPage() {
         icon={<Wallet className="h-5 w-5" />}
         actions={
           <>
-            <PaymentCard icon={ArrowDownCircle} label="Total Received" value={totalIn} tone="emerald" />
-            <PaymentCard icon={ArrowUpCircle} label="Total Paid Out" value={totalOut} tone="rose" />
-            <PaymentCard
-              icon={net >= 0 ? TrendingUp : TrendingDown}
-              label="Net Cash Flow"
-              value={net}
-              tone={net >= 0 ? "emerald" : "rose"}
-            />
+            {/* Tabs */}
+            <div className="flex items-center gap-0.5 h-9 border border-gray-200 rounded-lg p-0.5 bg-gray-50/60">
+              {(["all", "in", "out"] as Tab[]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTab(t)}
+                  className={`px-2.5 h-7 rounded-md text-xs font-semibold transition ${
+                    tab === t
+                      ? t === "in"
+                        ? "bg-emerald-50 text-emerald-700"
+                        : t === "out"
+                          ? "bg-rose-50 text-rose-700"
+                          : "bg-primary text-primary-foreground"
+                      : "text-gray-500 hover:bg-gray-100"
+                  }`}
+                >
+                  {t === "all" ? "All" : t === "in" ? "Received (In)" : "Paid Out"}
+                </button>
+              ))}
+            </div>
+
+            {/* Search */}
+            <div className="relative w-48">
+              <Search className="h-3.5 w-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search party, reference…"
+                className="w-full h-9 pl-9 pr-3 rounded-lg border border-gray-200 bg-gray-50/60 text-[13px] focus:outline-none focus:ring-2 focus:ring-primary/20 focus:bg-white transition"
+              />
+            </div>
+
             <button
               onClick={() => openForm("in")}
-              className="inline-flex items-center gap-1.5 h-8 px-3 bg-emerald-600 text-white rounded-md text-sm font-semibold hover:bg-emerald-700 transition"
+              className="inline-flex items-center gap-1.5 h-9 px-3 bg-emerald-600 text-white rounded-lg text-sm font-semibold hover:bg-emerald-700 transition"
             >
               <ArrowDownCircle className="h-4 w-4" /> Receive Payment
             </button>
             <button
               onClick={() => openForm("out")}
-              className="inline-flex items-center gap-1.5 h-8 px-3 bg-rose-600 text-white rounded-md text-sm font-semibold hover:bg-rose-700 transition"
+              className="inline-flex items-center gap-1.5 h-9 px-3 bg-rose-600 text-white rounded-lg text-sm font-semibold hover:bg-rose-700 transition"
             >
               <ArrowUpCircle className="h-4 w-4" /> Make Payment
             </button>
@@ -266,51 +275,28 @@ function PaymentsPage() {
         }
       />
 
-      {/* Tabs + Search */}
-      <div className="bg-white border-b px-5 py-2 flex items-center gap-4">
-        <div className="flex gap-1">
-          {(["all", "in", "out"] as Tab[]).map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-md transition ${
-                tab === t
-                  ? t === "in"
-                    ? "bg-emerald-50 text-emerald-700"
-                    : t === "out"
-                      ? "bg-rose-50 text-rose-700"
-                      : "bg-gray-100 text-gray-700"
-                  : "text-gray-500 hover:bg-gray-50"
-              }`}
-            >
-              {t === "all" ? "All" : t === "in" ? "Received (In)" : "Paid Out"}
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-1.5 border border-gray-200 rounded-md px-2.5 py-1.5 bg-white flex-1 max-w-xs ml-auto">
-          <Search className="h-3.5 w-3.5 text-gray-400" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search party, reference…"
-            className="text-xs flex-1 outline-none placeholder-gray-400 bg-transparent"
-          />
-          {search && (
-            <button onClick={() => setSearch("")}>
-              <X className="h-3 w-3 text-gray-400 hover:text-gray-600" />
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="p-3 flex-1 min-h-0 flex">
+      <div className="p-6 flex-1 min-h-0 flex">
         <DataTable
+          activateOnClick
           columns={columns}
           rows={filtered}
           rowKey={(r) => r.id}
           onRowActivate={openEdit}
           onDelete={handleDelete}
           emptyMessage="No payments recorded — use the buttons above to record one"
+          footer={
+            <tr>
+              <td colSpan={6}>
+                Received <span className="text-gray-300">|</span>{" "}
+                <span className="tabular-nums">{fmtMoney(totalIn)}</span>
+                <span className="text-gray-300"> · </span>
+                Paid Out <span className="text-gray-300">|</span>{" "}
+                <span className="tabular-nums">{fmtMoney(totalOut)}</span>
+              </td>
+              <td className="text-right tabular-nums">{fmtMoney(net)}</td>
+              <td />
+            </tr>
+          }
         />
       </div>
 
@@ -328,39 +314,6 @@ function PaymentsPage() {
   );
 }
 
-const PAYMENT_TONES = {
-  emerald: { bg: "bg-emerald-50", text: "text-emerald-600" },
-  rose: { bg: "bg-rose-50", text: "text-rose-600" },
-} as const;
-
-function PaymentCard({
-  icon: Icon,
-  label,
-  value,
-  tone,
-}: {
-  icon: LucideIcon;
-  label: string;
-  value: number;
-  tone: keyof typeof PAYMENT_TONES;
-}) {
-  const t = PAYMENT_TONES[tone];
-  return (
-    <div className="shrink-0 flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border border-gray-100 bg-white">
-      <div className={`h-8 w-8 rounded-md flex items-center justify-center shrink-0 ${t.bg} ${t.text}`}>
-        <Icon className="h-4 w-4" />
-      </div>
-      <div className="min-w-0">
-        <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wide mb-0.5 whitespace-nowrap">
-          {label}
-        </p>
-        <p className={`text-[14px] font-bold tabular-nums whitespace-nowrap ${t.text}`}>
-          {fmtMoney(value)}
-        </p>
-      </div>
-    </div>
-  );
-}
 
 /* ─── Proper Payment Dialog ──────────────────────────────────────────── */
 
