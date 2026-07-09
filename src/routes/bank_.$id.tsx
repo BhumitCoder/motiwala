@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { BankRepo, SalesRepo, PurchaseRepo, PaymentRepo, BankTxnRepo, CompanyRepo } from "@/repositories";
+import { BankRepo, SalesRepo, PurchaseRepo, PaymentRepo, BankTxnRepo, ExpenseRepo, CompanyRepo } from "@/repositories";
 import { buildBankLedger, type BankLedgerRow } from "@/lib/ledger";
 import { fmtMoney, fmtDate } from "@/lib/format";
 import { printWithName } from "@/lib/print";
@@ -30,6 +30,7 @@ function BankStatementPage() {
         purchases: PurchaseRepo.all(),
         payments: PaymentRepo.all(),
         bankTxns: BankTxnRepo.all(),
+        expenses: ExpenseRepo.all(),
       },
       dateFrom,
       dateTo,

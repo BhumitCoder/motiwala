@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ReportsRouteImport } from './routes/reports'
 import { Route as PaymentsRouteImport } from './routes/payments'
+import { Route as PayeesRouteImport } from './routes/payees'
 import { Route as PartiesRouteImport } from './routes/parties'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ItemsRouteImport } from './routes/items'
@@ -34,6 +35,7 @@ import { Route as PurchaseNewRouteImport } from './routes/purchase.new'
 import { Route as PurchaseIdRouteImport } from './routes/purchase.$id'
 import { Route as PurchaseReturnNewRouteImport } from './routes/purchase-return.new'
 import { Route as PurchaseReturnIdRouteImport } from './routes/purchase-return.$id'
+import { Route as PayeesIdRouteImport } from './routes/payees_.$id'
 import { Route as PartiesIdRouteImport } from './routes/parties_.$id'
 import { Route as ItemsIdRouteImport } from './routes/items_.$id'
 import { Route as BankIdRouteImport } from './routes/bank_.$id'
@@ -53,6 +55,11 @@ const ReportsRoute = ReportsRouteImport.update({
 const PaymentsRoute = PaymentsRouteImport.update({
   id: '/payments',
   path: '/payments',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PayeesRoute = PayeesRouteImport.update({
+  id: '/payees',
+  path: '/payees',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PartiesRoute = PartiesRouteImport.update({
@@ -165,6 +172,11 @@ const PurchaseReturnIdRoute = PurchaseReturnIdRouteImport.update({
   path: '/purchase-return/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PayeesIdRoute = PayeesIdRouteImport.update({
+  id: '/payees_/$id',
+  path: '/payees/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PartiesIdRoute = PartiesIdRouteImport.update({
   id: '/parties_/$id',
   path: '/parties/$id',
@@ -202,12 +214,14 @@ export interface FileRoutesByFullPath {
   '/items': typeof ItemsRoute
   '/login': typeof LoginRoute
   '/parties': typeof PartiesRoute
+  '/payees': typeof PayeesRoute
   '/payments': typeof PaymentsRoute
   '/reports': typeof ReportsRoute
   '/settings': typeof SettingsRoute
   '/bank/$id': typeof BankIdRoute
   '/items/$id': typeof ItemsIdRoute
   '/parties/$id': typeof PartiesIdRoute
+  '/payees/$id': typeof PayeesIdRoute
   '/purchase-return/$id': typeof PurchaseReturnIdRoute
   '/purchase-return/new': typeof PurchaseReturnNewRoute
   '/purchase/$id': typeof PurchaseIdRoute
@@ -234,12 +248,14 @@ export interface FileRoutesByTo {
   '/items': typeof ItemsRoute
   '/login': typeof LoginRoute
   '/parties': typeof PartiesRoute
+  '/payees': typeof PayeesRoute
   '/payments': typeof PaymentsRoute
   '/reports': typeof ReportsRoute
   '/settings': typeof SettingsRoute
   '/bank/$id': typeof BankIdRoute
   '/items/$id': typeof ItemsIdRoute
   '/parties/$id': typeof PartiesIdRoute
+  '/payees/$id': typeof PayeesIdRoute
   '/purchase-return/$id': typeof PurchaseReturnIdRoute
   '/purchase-return/new': typeof PurchaseReturnNewRoute
   '/purchase/$id': typeof PurchaseIdRoute
@@ -267,12 +283,14 @@ export interface FileRoutesById {
   '/items': typeof ItemsRoute
   '/login': typeof LoginRoute
   '/parties': typeof PartiesRoute
+  '/payees': typeof PayeesRoute
   '/payments': typeof PaymentsRoute
   '/reports': typeof ReportsRoute
   '/settings': typeof SettingsRoute
   '/bank_/$id': typeof BankIdRoute
   '/items_/$id': typeof ItemsIdRoute
   '/parties_/$id': typeof PartiesIdRoute
+  '/payees_/$id': typeof PayeesIdRoute
   '/purchase-return/$id': typeof PurchaseReturnIdRoute
   '/purchase-return/new': typeof PurchaseReturnNewRoute
   '/purchase/$id': typeof PurchaseIdRoute
@@ -301,12 +319,14 @@ export interface FileRouteTypes {
     | '/items'
     | '/login'
     | '/parties'
+    | '/payees'
     | '/payments'
     | '/reports'
     | '/settings'
     | '/bank/$id'
     | '/items/$id'
     | '/parties/$id'
+    | '/payees/$id'
     | '/purchase-return/$id'
     | '/purchase-return/new'
     | '/purchase/$id'
@@ -333,12 +353,14 @@ export interface FileRouteTypes {
     | '/items'
     | '/login'
     | '/parties'
+    | '/payees'
     | '/payments'
     | '/reports'
     | '/settings'
     | '/bank/$id'
     | '/items/$id'
     | '/parties/$id'
+    | '/payees/$id'
     | '/purchase-return/$id'
     | '/purchase-return/new'
     | '/purchase/$id'
@@ -365,12 +387,14 @@ export interface FileRouteTypes {
     | '/items'
     | '/login'
     | '/parties'
+    | '/payees'
     | '/payments'
     | '/reports'
     | '/settings'
     | '/bank_/$id'
     | '/items_/$id'
     | '/parties_/$id'
+    | '/payees_/$id'
     | '/purchase-return/$id'
     | '/purchase-return/new'
     | '/purchase/$id'
@@ -398,12 +422,14 @@ export interface RootRouteChildren {
   ItemsRoute: typeof ItemsRoute
   LoginRoute: typeof LoginRoute
   PartiesRoute: typeof PartiesRoute
+  PayeesRoute: typeof PayeesRoute
   PaymentsRoute: typeof PaymentsRoute
   ReportsRoute: typeof ReportsRoute
   SettingsRoute: typeof SettingsRoute
   BankIdRoute: typeof BankIdRoute
   ItemsIdRoute: typeof ItemsIdRoute
   PartiesIdRoute: typeof PartiesIdRoute
+  PayeesIdRoute: typeof PayeesIdRoute
   PurchaseReturnIdRoute: typeof PurchaseReturnIdRoute
   PurchaseReturnNewRoute: typeof PurchaseReturnNewRoute
   PurchaseIdRoute: typeof PurchaseIdRoute
@@ -441,6 +467,13 @@ declare module '@tanstack/react-router' {
       path: '/payments'
       fullPath: '/payments'
       preLoaderRoute: typeof PaymentsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/payees': {
+      id: '/payees'
+      path: '/payees'
+      fullPath: '/payees'
+      preLoaderRoute: typeof PayeesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/parties': {
@@ -597,6 +630,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PurchaseReturnIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/payees_/$id': {
+      id: '/payees_/$id'
+      path: '/payees/$id'
+      fullPath: '/payees/$id'
+      preLoaderRoute: typeof PayeesIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/parties_/$id': {
       id: '/parties_/$id'
       path: '/parties/$id'
@@ -646,12 +686,14 @@ const rootRouteChildren: RootRouteChildren = {
   ItemsRoute: ItemsRoute,
   LoginRoute: LoginRoute,
   PartiesRoute: PartiesRoute,
+  PayeesRoute: PayeesRoute,
   PaymentsRoute: PaymentsRoute,
   ReportsRoute: ReportsRoute,
   SettingsRoute: SettingsRoute,
   BankIdRoute: BankIdRoute,
   ItemsIdRoute: ItemsIdRoute,
   PartiesIdRoute: PartiesIdRoute,
+  PayeesIdRoute: PayeesIdRoute,
   PurchaseReturnIdRoute: PurchaseReturnIdRoute,
   PurchaseReturnNewRoute: PurchaseReturnNewRoute,
   PurchaseIdRoute: PurchaseIdRoute,

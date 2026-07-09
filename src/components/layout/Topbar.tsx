@@ -118,7 +118,7 @@ export function Topbar() {
 
       <button
         onClick={async () => {
-          if (!confirm("Logout from OM?")) return;
+          if (!confirm("Logout from AIM?")) return;
           try {
             stopRepos();
             await signOut(auth);

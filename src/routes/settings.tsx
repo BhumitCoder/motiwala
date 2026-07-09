@@ -18,6 +18,9 @@ import {
   Upload,
   Trash2,
   ShieldCheck,
+  Receipt,
+  X,
+  Plus,
 } from "lucide-react";
 
 export const Route = createFileRoute("/settings")({ component: SettingsPage });
@@ -25,8 +28,34 @@ export const Route = createFileRoute("/settings")({ component: SettingsPage });
 function SettingsPage() {
   const [c, setC] = useState<Company>(() => CompanyRepo.get());
   const [busy, setBusy] = useState(false);
+  const [newCategory, setNewCategory] = useState("");
   const importRef = useRef<HTMLInputElement>(null);
   const userEmail = isBrowser ? (auth.currentUser?.email ?? "") : "";
+
+  // Category add/remove save immediately (like Export/Import below), rather
+  // than waiting on the Company Details card's separate Save button, which
+  // sits far enough away to feel disconnected from this action.
+  const addCategory = () => {
+    const name = newCategory.trim();
+    if (!name) return;
+    const existing = c.expenseCategories ?? [];
+    if (existing.some((x) => x.toLowerCase() === name.toLowerCase())) {
+      toast.error(`"${name}" is already in the list`);
+      return;
+    }
+    const next = { ...c, expenseCategories: [...existing, name] };
+    setC(next);
+    CompanyRepo.save(next);
+    setNewCategory("");
+    toast.success(`"${name}" added`);
+  };
+
+  const removeCategory = (name: string) => {
+    const next = { ...c, expenseCategories: (c.expenseCategories ?? []).filter((x) => x !== name) };
+    setC(next);
+    CompanyRepo.save(next);
+    toast.success(`"${name}" removed`);
+  };
 
   const save = (e: React.FormEvent) => {
     e.preventDefault();
@@ -78,7 +107,7 @@ function SettingsPage() {
       const known = Object.keys(REPO_BY_KEY).filter((k) => dump[k] != null);
       const hasCompany = dump["bz.company"] != null;
       if (!known.length && !hasCompany) {
-        toast.error("No OM data found in this file");
+        toast.error("No AIM data found in this file");
         return;
       }
       if (
@@ -103,7 +132,7 @@ function SettingsPage() {
       setTimeout(() => location.reload(), 800);
     } catch {
       setBusy(false);
-      toast.error("Could not read backup file — is it a valid OM backup?");
+      toast.error("Could not read backup file — is it a valid AIM backup?");
     }
   };
 
@@ -206,6 +235,54 @@ function SettingsPage() {
             <Button type="submit">Save</Button>
           </div>
         </form>
+
+        <div className="bg-white border border-gray-100 rounded-lg shadow-sm overflow-hidden">
+          <SectionHeader
+            icon={<Receipt className="h-4 w-4" />}
+            title="Expense Categories"
+            description="The only categories staff can pick when recording an expense — add or remove them here, like a Chart of Accounts"
+          />
+          <div className="p-5">
+            <div className="flex flex-wrap gap-2 mb-4">
+              {(c.expenseCategories ?? []).length === 0 && (
+                <p className="text-xs text-gray-400">No categories yet — add one below.</p>
+              )}
+              {(c.expenseCategories ?? []).map((cat) => (
+                <span
+                  key={cat}
+                  className="inline-flex items-center gap-1.5 pl-3 pr-1.5 py-1.5 rounded-full bg-primary-soft text-primary text-xs font-semibold"
+                >
+                  {cat}
+                  <button
+                    type="button"
+                    onClick={() => removeCategory(cat)}
+                    className="rounded-full p-0.5 hover:bg-primary/20 transition"
+                    title={`Remove "${cat}"`}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input
+                value={newCategory}
+                onChange={(e) => setNewCategory(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addCategory();
+                  }
+                }}
+                placeholder="e.g. Marketing, Insurance…"
+                className="h-9 px-3 border rounded-md bg-background text-sm flex-1 focus:border-primary focus:ring-2 focus:ring-ring/20 outline-none"
+              />
+              <Button type="button" onClick={addCategory}>
+                <Plus className="h-3.5 w-3.5" /> Add
+              </Button>
+            </div>
+          </div>
+        </div>
 
         <div className="bg-white border border-gray-100 rounded-lg shadow-sm overflow-hidden">
           <SectionHeader

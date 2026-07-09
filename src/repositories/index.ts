@@ -7,6 +7,7 @@ import type {
   Item,
   Invoice,
   Expense,
+  Payee,
   BankAccount,
   BankTxn,
   Payment,
@@ -23,6 +24,7 @@ export const PurchaseRepo = new Repository<Invoice>("purchases");
 export const SaleReturnRepo = new Repository<Return>("sale-returns");
 export const PurchaseReturnRepo = new Repository<Return>("purchase-returns");
 export const ExpenseRepo = new Repository<Expense>("expenses");
+export const PayeeRepo = new Repository<Payee>("payees");
 export const BankRepo = new Repository<BankAccount>("banks");
 export const BankTxnRepo = new Repository<BankTxn>("bankTxns");
 export const PaymentRepo = new Repository<Payment>("payments");
@@ -36,6 +38,17 @@ const defaultCompany: Company = {
   purchasePrefix: "PUR-",
   enableGst: true,
   allowNegativeStock: true,
+  expenseCategories: [
+    "Salary",
+    "Rent",
+    "Electricity",
+    "Fuel",
+    "Office Supplies",
+    "Maintenance & Repairs",
+    "Transport & Freight",
+    "Telephone & Internet",
+    "Miscellaneous",
+  ],
 };
 
 /** Company settings live in a single Firestore doc: settings/company */
@@ -95,6 +108,7 @@ export const REPO_BY_KEY: Record<string, Repository<{ id: string }>> = {
   "bz.sale-returns": SaleReturnRepo as Repository<{ id: string }>,
   "bz.purchase-returns": PurchaseReturnRepo as Repository<{ id: string }>,
   "bz.expenses": ExpenseRepo as Repository<{ id: string }>,
+  "bz.payees": PayeeRepo as Repository<{ id: string }>,
   "bz.banks": BankRepo as Repository<{ id: string }>,
   "bz.bankTxns": BankTxnRepo as Repository<{ id: string }>,
   "bz.payments": PaymentRepo as Repository<{ id: string }>,

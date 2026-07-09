@@ -357,6 +357,11 @@ function ReceivePaymentDialog({
   const [bankQ, setBankQ] = useState("");
   const [bankOpen, setBankOpen] = useState(false);
   const [bankIdx, setBankIdx] = useState(0);
+  // Enter should only commit a bank pick once the user has typed or
+  // arrow-navigated — a reflex Enter right after the dropdown opens on
+  // focus (showing every bank account) shouldn't silently pick whichever
+  // one happens to be first.
+  const [bankNavigated, setBankNavigated] = useState(false);
   const [applyRows, setApplyRows] = useState<ApplyRow[]>([]);
   const [manualAmount, setManualAmount] = useState("");
   const [saving, setSaving] = useState(false);
@@ -896,6 +901,7 @@ function ReceivePaymentDialog({
                     if (m !== "bank") {
                       setBankId("");
                       setBankQ("");
+                      setBankNavigated(false);
                     }
                   }}
                   modes={["cash", "bank"]}
@@ -920,13 +926,17 @@ function ReceivePaymentDialog({
                 onKeyDown={(e) => {
                   if (e.key === "ArrowDown") {
                     e.preventDefault();
+                    setBankNavigated(true);
                     setBankIdx((i) => Math.min(bankSuggests.length - 1, i + 1));
                   } else if (e.key === "ArrowUp") {
                     e.preventDefault();
+                    setBankNavigated(true);
                     setBankIdx((i) => Math.max(0, i - 1));
                   } else if (e.key === "Enter") {
                     e.preventDefault();
-                    if (bankSuggests[bankIdx]) selectBank(bankSuggests[bankIdx]);
+                    if (bankSuggests[bankIdx] && (bankQ.trim() || bankNavigated)) {
+                      selectBank(bankSuggests[bankIdx]);
+                    }
                   }
                 }}
                 placeholder="Search bank account…"

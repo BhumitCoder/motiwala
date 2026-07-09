@@ -22,6 +22,7 @@ import {
   ChevronDown,
   ChevronRight,
   LogOut,
+  UserSquare2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWorkspace } from "@/store/workspace";
@@ -64,6 +65,7 @@ const groups: NavGroup[] = [
       { path: "/purchase", label: "Purchase", icon: Truck, key: "5" },
       { path: "/purchase-return", label: "Purchase Return", icon: CornerUpLeft },
       { path: "/expenses", label: "Expenses", icon: Receipt, key: "6" },
+      { path: "/payees", label: "Expense Payees", icon: UserSquare2 },
     ],
   },
   // {
@@ -141,7 +143,7 @@ export function Sidebar() {
           {!collapsed && (
             <div className="flex flex-col leading-tight overflow-hidden">
               <span className="font-bold tracking-tight text-[15px] text-sidebar-foreground">
-                OM
+                AIM
               </span>
               <span className="text-[10px] uppercase tracking-widest text-sidebar-muted">
                 Billing · Inventory
@@ -216,7 +218,7 @@ export function Sidebar() {
         {/* Logout — mobile drawer only; desktop keeps it in the Topbar */}
         <button
           onClick={async () => {
-            if (!confirm("Logout from OM?")) return;
+            if (!confirm("Logout from AIM?")) return;
             try {
               stopRepos();
               await signOut(auth);

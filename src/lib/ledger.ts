@@ -624,10 +624,11 @@ export interface BankLedgerRow {
 
 /**
  * Full passbook-style ledger for one bank account — every sale/purchase
- * settled directly into it, every Payments-page in/out tied to it, and every
- * manual deposit/withdrawal, with a running balance. Standard passbook sign
- * convention: Credit = money in, Debit = money out (opposite of the party
- * ledger's convention, where Debit means the party owes more).
+ * settled directly into it, every Payments-page in/out tied to it, every
+ * bank-mode expense paid from it, and every manual deposit/withdrawal, with
+ * a running balance. Standard passbook sign convention: Credit = money in,
+ * Debit = money out (opposite of the party ledger's convention, where Debit
+ * means the party owes more).
  */
 export function buildBankLedger(
   bank: { id: string; openingBalance?: number },
@@ -636,6 +637,7 @@ export function buildBankLedger(
     purchases: Invoice[];
     payments: Payment[];
     bankTxns: BankTxn[];
+    expenses?: Expense[];
   },
   dateFrom = "",
   dateTo = "",
@@ -707,6 +709,16 @@ export function buildBankLedger(
         credit: 0,
       });
     }
+  }
+  for (const ex of (data.expenses ?? []).filter((x) => x.bankId === bank.id)) {
+    entries.push({
+      date: ex.date,
+      created: ex.createdAt,
+      type: "Expense",
+      ref: ex.category + (ex.notes ? ` — ${ex.notes}` : ""),
+      debit: ex.amount,
+      credit: 0,
+    });
   }
 
   entries.sort(

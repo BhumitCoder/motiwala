@@ -62,6 +62,10 @@ export function ReturnForm({ mode }: Props) {
   const [partyQ, setPartyQ] = useState("");
   const [partyOpen, setPartyOpen] = useState(false);
   const [partyIdx, setPartyIdx] = useState(0);
+  // Enter should only commit a party pick once the user has typed or
+  // arrow-navigated — a reflex Enter right after the dropdown opens on
+  // focus (now showing the full list) shouldn't silently pick one.
+  const [partyNavigated, setPartyNavigated] = useState(false);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   // A party typed at the counter that doesn't exist yet is no longer
@@ -107,7 +111,9 @@ export function ReturnForm({ mode }: Props) {
 
   const partySuggests = useMemo(() => {
     const q = partyQ.trim().toLowerCase();
-    if (!q) return [];
+    // Empty query — browse the full party list (like a combobox), instead
+    // of showing nothing until the user starts typing.
+    if (!q) return allParties.slice(0, 8);
     return allParties.filter((p) => p.name.toLowerCase().includes(q)).slice(0, 8);
   }, [partyQ, allParties]);
 
@@ -439,13 +445,17 @@ export function ReturnForm({ mode }: Props) {
                   onKeyDown={(e) => {
                     if (e.key === "ArrowDown") {
                       e.preventDefault();
+                      setPartyNavigated(true);
                       setPartyIdx((i) => Math.min(partySuggests.length - 1, i + 1));
                     } else if (e.key === "ArrowUp") {
                       e.preventDefault();
+                      setPartyNavigated(true);
                       setPartyIdx((i) => Math.max(0, i - 1));
                     } else if (e.key === "Enter") {
                       e.preventDefault();
-                      if (partySuggests[partyIdx]) selectParty(partySuggests[partyIdx]);
+                      if (partySuggests[partyIdx] && (partyQ.trim() || partyNavigated)) {
+                        selectParty(partySuggests[partyIdx]);
+                      }
                     }
                   }}
                   className="h-9 px-3 border rounded-md bg-background focus:border-primary focus:ring-2 focus:ring-ring/20 outline-none"
@@ -683,9 +693,13 @@ function ReturnItemSearchBar({ items, onAdd }: { items: Item[]; onAdd: (i: Item)
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const [idx, setIdx] = useState(0);
+  // Enter should only commit a pick once the user has typed or
+  // arrow-navigated — a reflex Enter right after the dropdown opens on
+  // focus (now showing every item) shouldn't silently add a phantom line.
+  const [navigated, setNavigated] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  // Empty query = NO suggestions — otherwise Enter/ArrowDown on the empty box
-  // would act on an invisible list of all items and add a phantom line
+  // Empty query — browse the full item catalog (like a combobox), instead
+  // of showing nothing until the user starts typing.
   const suggests = q.trim()
     ? items
         .filter(
@@ -695,13 +709,14 @@ function ReturnItemSearchBar({ items, onAdd }: { items: Item[]; onAdd: (i: Item)
             i.barcode?.includes(q),
         )
         .slice(0, 8)
-    : [];
+    : items.slice(0, 8);
 
   const pick = (it: Item) => {
     onAdd(it);
     setQ("");
     setOpen(false);
     setIdx(0);
+    setNavigated(false);
     setTimeout(() => inputRef.current?.focus(), 30);
   };
   return (
@@ -714,18 +729,20 @@ function ReturnItemSearchBar({ items, onAdd }: { items: Item[]; onAdd: (i: Item)
             setOpen(true);
             setIdx(0);
           }}
-          onFocus={() => q && setOpen(true)}
+          onFocus={() => setOpen(true)}
           onBlur={() => setTimeout(() => setOpen(false), 150)}
           onKeyDown={(e) => {
             if (e.key === "ArrowDown") {
               e.preventDefault();
+              setNavigated(true);
               setIdx((i) => Math.min(suggests.length - 1, i + 1));
             } else if (e.key === "ArrowUp") {
               e.preventDefault();
+              setNavigated(true);
               setIdx((i) => Math.max(0, i - 1));
             } else if (e.key === "Enter") {
               e.preventDefault();
-              if (suggests[idx]) pick(suggests[idx]);
+              if (suggests[idx] && (q.trim() || navigated)) pick(suggests[idx]);
             }
           }}
           placeholder="🔍  Search item to add for return…"

@@ -184,6 +184,7 @@ function DaybookPage() {
       purchases: PurchaseRepo.all(),
       payments: PaymentRepo.all(),
       bankTxns: BankTxnRepo.all(),
+      expenses: ExpenseRepo.all(),
     };
     return banks.map((b) => {
       const dayOnly = buildBankLedger(b, data, date, date);

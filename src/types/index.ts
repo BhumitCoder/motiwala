@@ -77,12 +77,37 @@ export interface Invoice {
   createdAt: string;
 }
 
+/**
+ * Who an expense was actually paid to (an employee, landlord, vendor...) —
+ * separate from Category (what kind of expense it is), so "how much have I
+ * paid Vikas, ever" is answerable without re-deriving it from free text.
+ * Deliberately lightweight (no phone/GSTIN/balance like Party) — this is
+ * just a name, grown organically as expenses are entered, not a form the
+ * user fills out up front.
+ */
+export interface Payee {
+  id: ID;
+  name: string;
+  /** Pre-fills Category when this payee is picked on a new expense — cuts
+   * down on miscategorized entries for a payee that's (almost) always the
+   * same kind of spend, e.g. picking "Vikas" always suggesting "Salary". */
+  defaultCategory?: string;
+  createdAt: string;
+}
+
 export interface Expense {
   id: ID;
   date: string;
   category: string;
   amount: number;
   paymentMode: PaymentMode;
+  /** Which bank account this was paid from — only set when paymentMode is "bank". */
+  bankId?: ID;
+  /** Who this was actually paid to — see Payee. Optional on the type so
+   * older records saved before this existed still load; the expense form
+   * requires it going forward. */
+  payeeId?: ID;
+  payeeName?: string;
   notes?: string;
   createdAt: string;
 }
@@ -191,4 +216,9 @@ export interface Company {
   allowNegativeStock?: boolean;
   /** Preferred print format, remembered from the invoice page */
   printFormat?: PrintFormat;
+  /** The expense Category list — admin-managed from Settings, like a real
+   * Chart of Accounts, rather than free text every user can invent on the
+   * fly. Kept on Company (not its own repository) since it's a short,
+   * stable list, unlike Payee which is meant to grow organically. */
+  expenseCategories?: string[];
 }
