@@ -12,7 +12,7 @@
 /** Same named Firestore database the client SDK uses — see DATABASE_ID in
  * src/lib/firebase.ts. Must match exactly, or Admin SDK writes would land in
  * the wrong (default) database where the app never looks. */
-const DATABASE_ID = "kinteshmobileacce";
+const DATABASE_ID = "omimpex";
 
 let appPromise: Promise<import("firebase-admin").app.App> | null = null;
 
