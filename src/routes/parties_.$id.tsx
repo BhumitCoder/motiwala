@@ -24,7 +24,6 @@ import { usePermissions } from "@/hooks/usePermissions";
 import type { Party } from "@/types";
 import { toast } from "sonner";
 import {
-  ArrowLeft,
   Pencil,
   Printer,
   AlertCircle,
@@ -318,13 +317,6 @@ function PartyStatementPage() {
       <div className="no-print bg-white border-b px-5 py-3 flex flex-col gap-3">
         <div className="flex items-center justify-between gap-2.5">
           <div className="flex items-center gap-2.5 min-w-0">
-            <button
-              onClick={() => navigate({ to: "/parties" })}
-              className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 hover:border-gray-300 flex items-center justify-center text-gray-600 transition shadow-sm"
-              title="Back to Parties"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </button>
             <div className="h-8 w-8 shrink-0 rounded-full bg-primary-soft text-primary flex items-center justify-center font-bold text-[13px] uppercase">
               {party.name.trim().charAt(0) || "?"}
             </div>
@@ -384,14 +376,6 @@ function PartyStatementPage() {
             >
               <MessageCircle className="h-4 w-4" />
             </button>
-            <button
-              onClick={() => promptFormat("print")}
-              disabled={!!pdfBusy}
-              className="h-8 w-8 shrink-0 rounded-md bg-primary text-white flex items-center justify-center transition hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed"
-              title="Print"
-            >
-              {pdfBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Printer className="h-4 w-4" />}
-            </button>
             {editAllowed && (
               <button
                 onClick={() => setEditOpen(true)}
@@ -401,6 +385,14 @@ function PartyStatementPage() {
                 <Pencil className="h-4 w-4" />
               </button>
             )}
+            <button
+              onClick={() => promptFormat("print")}
+              disabled={!!pdfBusy}
+              className="h-8 w-8 shrink-0 rounded-md bg-primary text-white flex items-center justify-center transition hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed"
+              title="Print"
+            >
+              {pdfBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Printer className="h-4 w-4" />}
+            </button>
           </div>
         </div>
 
