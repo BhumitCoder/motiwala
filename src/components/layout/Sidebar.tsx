@@ -179,7 +179,7 @@ export function Sidebar() {
             {!collapsed && (
               <div className="flex flex-col leading-tight overflow-hidden">
                 <span className="font-bold tracking-tight text-[15px] text-sidebar-foreground">
-                  AIM
+                  OM IMPEX
                 </span>
                 <span className="text-[10px] uppercase tracking-widest text-sidebar-muted">
                   Billing · Inventory
@@ -257,7 +257,7 @@ export function Sidebar() {
             reasoning as the Brand section's top padding above. */}
         <button
           onClick={async () => {
-            if (!confirm("Logout from AIM?")) return;
+            if (!confirm("Logout from OM IMPEX?")) return;
             try {
               stopRepos();
               await signOut(auth);

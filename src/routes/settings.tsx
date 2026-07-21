@@ -136,15 +136,15 @@ function SettingsPage() {
     records.map((r) =>
       Array.isArray(r?.lineItems)
         ? {
-            ...r,
-            lineItems: r.lineItems.map((l: any) => ({
-              ...l,
-              qty: Number(l?.qty) || 0,
-              price: Number(l?.price) || 0,
-              discountPct: Number(l?.discountPct) || 0,
-              gstRate: Number(l?.gstRate) || 0,
-            })),
-          }
+          ...r,
+          lineItems: r.lineItems.map((l: any) => ({
+            ...l,
+            qty: Number(l?.qty) || 0,
+            price: Number(l?.price) || 0,
+            discountPct: Number(l?.discountPct) || 0,
+            gstRate: Number(l?.gstRate) || 0,
+          })),
+        }
         : r,
     );
 
@@ -155,7 +155,7 @@ function SettingsPage() {
       const known = Object.keys(REPO_BY_KEY).filter((k) => dump[k] != null);
       const hasCompany = dump["bz.company"] != null;
       if (!known.length && !hasCompany) {
-        toast.error("No AIM data found in this file");
+        toast.error("No OM IMPEX data found in this file");
         return;
       }
       if (
@@ -180,7 +180,7 @@ function SettingsPage() {
       setTimeout(() => location.reload(), 800);
     } catch {
       setBusy(false);
-      toast.error("Could not read backup file — is it a valid AIM backup?");
+      toast.error("Could not read backup file — is it a valid OM IMPEX backup?");
     }
   };
 
@@ -222,11 +222,10 @@ function SettingsPage() {
                   onClick={() =>
                     s.ref.current?.scrollIntoView({ behavior: "smooth", block: "start" })
                   }
-                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-[13px] font-medium transition text-left ${
-                    activeSection === s.key
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-[13px] font-medium transition text-left ${activeSection === s.key
                       ? "bg-primary-soft text-primary"
                       : "text-gray-500 hover:bg-gray-100 hover:text-gray-800"
-                  }`}
+                    }`}
                 >
                   <s.icon className="h-3.5 w-3.5 shrink-0" />
                   <span className="truncate">{s.label}</span>
