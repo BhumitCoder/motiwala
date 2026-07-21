@@ -343,19 +343,68 @@ function PartyStatementPage() {
               </p>
             </div>
           </div>
-          {editAllowed && (
+          {/* Export/share actions — kept to the left of the edit button so
+              the whole action set (Excel/PDF/Share/WhatsApp/Print) reads as
+              one group with Edit, instead of its own row competing with the
+              balance cards for vertical space. Pure layout move — none of
+              the handlers below changed. */}
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
-              onClick={() => setEditOpen(true)}
+              onClick={downloadExcel}
               className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition"
-              title="Edit party"
+              title="Download full ledger as Excel"
             >
-              <Pencil className="h-4 w-4" />
+              <Download className="h-4 w-4" />
             </button>
-          )}
+            <button
+              onClick={() => promptFormat("download")}
+              disabled={pdfBusy !== null}
+              className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50"
+              title="Download statement as PDF"
+            >
+              <FileDown className="h-4 w-4" />
+            </button>
+            <button
+              // Once a PDF is already prepared and waiting for confirmation
+              // (shareReady), this tap must go straight to handleShare() — a
+              // direct, fresh click — rather than back through the format
+              // modal, or the share sheet loses the user gesture it needs.
+              onClick={() => (shareReady ? handleShare() : promptFormat("share"))}
+              disabled={pdfBusy !== null}
+              className={`h-8 w-8 shrink-0 rounded-md border bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50 ${shareReady ? "border-primary ring-2 ring-primary animate-pulse" : "border-gray-200"}`}
+              title={shareReady ? "PDF ready — tap again to share" : "Share statement PDF"}
+            >
+              <Share2 className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() => promptFormat("whatsapp")}
+              disabled={pdfBusy !== null}
+              className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50"
+              title="Send statement on WhatsApp"
+            >
+              <MessageCircle className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() => promptFormat("print")}
+              disabled={!!pdfBusy}
+              className="h-8 w-8 shrink-0 rounded-md bg-primary text-white flex items-center justify-center transition hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed"
+              title="Print"
+            >
+              {pdfBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Printer className="h-4 w-4" />}
+            </button>
+            {editAllowed && (
+              <button
+                onClick={() => setEditOpen(true)}
+                className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition"
+                title="Edit party"
+              >
+                <Pencil className="h-4 w-4" />
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* Balance summary — its own row, evenly split, instead of three
-            fixed-width cards competing with the action buttons for space. */}
+        {/* Balance summary — its own row, evenly split. */}
         <div className="grid grid-cols-3 gap-2">
           <StatementCard icon={Receipt} label="Total Billed" value={totalBilled} tone="gray" />
           <StatementCard icon={CheckCircle2} label="Received / Paid" value={totalReceived} tone="emerald" />
@@ -365,53 +414,6 @@ function PartyStatementPage() {
             value={Math.abs(balance)}
             tone={balance > 0 ? "rose" : balance < 0 ? "amber" : "emerald"}
           />
-        </div>
-
-        {/* Export/share actions */}
-        <div className="flex items-center gap-2">
-          <button
-            onClick={downloadExcel}
-            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition"
-            title="Download full ledger as Excel"
-          >
-            <Download className="h-4 w-4" />
-          </button>
-          <button
-            onClick={() => promptFormat("download")}
-            disabled={pdfBusy !== null}
-            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50"
-            title="Download statement as PDF"
-          >
-            <FileDown className="h-4 w-4" />
-          </button>
-          <button
-            // Once a PDF is already prepared and waiting for confirmation
-            // (shareReady), this tap must go straight to handleShare() — a
-            // direct, fresh click — rather than back through the format
-            // modal, or the share sheet loses the user gesture it needs.
-            onClick={() => (shareReady ? handleShare() : promptFormat("share"))}
-            disabled={pdfBusy !== null}
-            className={`h-8 w-8 shrink-0 rounded-md border bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50 ${shareReady ? "border-primary ring-2 ring-primary animate-pulse" : "border-gray-200"}`}
-            title={shareReady ? "PDF ready — tap again to share" : "Share statement PDF"}
-          >
-            <Share2 className="h-4 w-4" />
-          </button>
-          <button
-            onClick={() => promptFormat("whatsapp")}
-            disabled={pdfBusy !== null}
-            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50"
-            title="Send statement on WhatsApp"
-          >
-            <MessageCircle className="h-4 w-4" />
-          </button>
-          <button
-            onClick={() => promptFormat("print")}
-            disabled={!!pdfBusy}
-            className="flex-1 inline-flex items-center justify-center gap-1.5 h-8 px-3 bg-primary text-white rounded-md text-sm font-semibold hover:opacity-90 transition disabled:opacity-60 disabled:cursor-not-allowed"
-            title="Print"
-          >
-            {pdfBusy ? (<><Loader2 className="h-4 w-4 animate-spin" /> Preparing…</>) : (<><Printer className="h-4 w-4" /> Print</>)}
-          </button>
         </div>
       </div>
 
