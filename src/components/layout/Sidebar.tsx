@@ -260,7 +260,7 @@ export function Sidebar() {
             comfortable height with its content centered inside it. */}
         <div
           className="md:hidden shrink-0 border-t border-sidebar-border"
-          style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+          style={{ paddingBottom: "min(env(safe-area-inset-bottom, 0px), 10px)" }}
         >
           <button
             onClick={async () => {
