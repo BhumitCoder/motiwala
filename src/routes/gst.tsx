@@ -3,6 +3,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { SalesRepo, PurchaseRepo, SaleReturnRepo, PurchaseReturnRepo } from "@/repositories";
+import { useRepoData } from "@/hooks/useRepoData";
 import type { Invoice, LineItem, Return } from "@/types";
 import { fmtMoney, ymd } from "@/lib/format";
 import { downloadElementAsPdf } from "@/lib/pdf";
@@ -61,6 +62,7 @@ function bucketsFor(invoices: Invoice[], returns: Return[]): Bucket[] {
 }
 
 function GstPage() {
+  const _repoV = useRepoData();
   const [period, setPeriod] = useState(currentPeriod);
   const [sales, setSales] = useState<Invoice[]>([]);
   const [purchases, setPurchases] = useState<Invoice[]>([]);
@@ -73,7 +75,7 @@ function GstPage() {
     setPurchases(PurchaseRepo.all());
     setSaleReturns(SaleReturnRepo.all());
     setPurchaseReturns(PurchaseReturnRepo.all());
-  }, []);
+  }, [_repoV]);
 
   const { start, end } = periodRange(period);
   const inPeriod = <T extends { date: string }>(docs: T[]) =>
@@ -174,7 +176,36 @@ function Section({ title, rows }: { title: string; rows: Bucket[] }) {
   return (
     <div className="border rounded-md bg-card">
       <div className="px-3 py-2 border-b font-semibold">{title}</div>
-      <div className="data-table">
+      {/* The mobile/desktop split below is screen-only — print must always
+          show the real table regardless of the device it's triggered from,
+          so this overrides both sides of the split back for @media print
+          rather than trusting how a given browser resolves `md:` during an
+          actual print render. */}
+      <style>{`@media print {
+        .gst-mobile-cards { display: none !important; }
+        .gst-table { display: table !important; }
+      }`}</style>
+      {/* Mobile card list — a 5-column table is still tight on a phone;
+          this is the same rate buckets as one card per GST rate instead. */}
+      <div className="md:hidden gst-mobile-cards">
+        {rows.length === 0 ? (
+          <p className="text-center py-6 text-muted-foreground">No entries</p>
+        ) : (
+          <div className="divide-y">
+            {rows.map((r) => (
+              <div key={r.rate} className="p-3 flex items-center justify-between gap-3">
+                <span className="font-medium">{r.rate}% GST</span>
+                <div className="text-right text-xs text-muted-foreground">
+                  <p>Taxable {fmtMoney(r.taxable)}</p>
+                  <p>CGST {fmtMoney(r.tax / 2)} · SGST {fmtMoney(r.tax / 2)}</p>
+                  <p className="font-semibold text-foreground">Tax {fmtMoney(r.tax)}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="hidden md:block data-table gst-table">
         <table className="w-full text-[13px]">
           <thead>
             <tr>

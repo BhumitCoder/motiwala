@@ -12,6 +12,7 @@ import {
   PurchaseReturnRepo,
   CashAdjustmentRepo,
 } from "@/repositories";
+import { useRepoData } from "@/hooks/useRepoData";
 import { fmtMoney, ymd } from "@/lib/format";
 import { partyBalances, cashFlows, netFlow, computeCogs, bankFlows, type PartyBalance } from "@/lib/ledger";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -89,6 +90,7 @@ function fmt(n: number) {
 }
 
 function Dashboard() {
+  const _repoV = useRepoData();
   const navigate = useNavigate();
   const [period, setPeriod] = useState<Period>("this_month");
   const [showPeriodMenu, setShowPeriodMenu] = useState(false);
@@ -119,10 +121,12 @@ function Dashboard() {
       purchaseReturns: PurchaseReturnRepo.all(),
       cashAdjustments: CashAdjustmentRepo.all(),
     });
-  }, []);
+  }, [_repoV]);
 
-  const { start, end } = getPeriodRange(period);
-  const periodLabel = getPeriodRange(period).label;
+  // Memoize the range so it's a stable reference while `period` is unchanged —
+  // otherwise every downstream useMemo keyed on start/end (chart, COGS) would
+  // see fresh objects each render and never actually cache.
+  const { start, end, label: periodLabel } = useMemo(() => getPeriodRange(period), [period]);
 
   const periodSales = data.sales.filter((s) => inRange(s.date, start, end));
   const periodPurchases = data.purchases.filter((s) => inRange(s.date, start, end));
@@ -137,19 +141,31 @@ function Dashboard() {
 
   // Same per-party balance rules as the Customer/Supplier Ledger reports,
   // so the dashboard and reports always agree (returns and advances included)
-  const customerBalances = partyBalances(
-    data.sales,
-    data.saleReturns,
-    data.payments.filter((p: any) => p.type === "in"),
-    data.parties.filter((p: any) => p.type !== "supplier"),
-    "customer",
+  // These aggregates are all-time (not period-scoped) and scan every document,
+  // so they're memoized on `data` — recomputing them on every unrelated render
+  // (opening a dropdown, the party dialog) was the dashboard's perf cost at
+  // scale. Values are identical to the inline version; only the frequency drops.
+  const customerBalances = useMemo(
+    () =>
+      partyBalances(
+        data.sales,
+        data.saleReturns,
+        data.payments.filter((p: any) => p.type === "in"),
+        data.parties.filter((p: any) => p.type !== "supplier"),
+        "customer",
+      ),
+    [data],
   );
-  const supplierBalances = partyBalances(
-    data.purchases,
-    data.purchaseReturns,
-    data.payments.filter((p: any) => p.type === "out"),
-    data.parties.filter((p: any) => p.type !== "customer"),
-    "supplier",
+  const supplierBalances = useMemo(
+    () =>
+      partyBalances(
+        data.purchases,
+        data.purchaseReturns,
+        data.payments.filter((p: any) => p.type === "out"),
+        data.parties.filter((p: any) => p.type !== "customer"),
+        "supplier",
+      ),
+    [data],
   );
   const receivable = customerBalances.reduce((a, b) => a + Math.max(0, b.balance), 0);
   const payable = supplierBalances.reduce((a, b) => a + Math.max(0, b.balance), 0);
@@ -157,16 +173,28 @@ function Dashboard() {
   const payableParties = supplierBalances.filter((b) => b.balance > 0.01).length;
 
   const stockValue = data.items.reduce((a, i) => a + (i.stock || 0) * (i.purchasePrice || 0), 0);
-  const cashInHand = netFlow(
-    cashFlows(data.sales, data.purchases, data.expenses, data.payments, data.cashAdjustments),
+  const cashInHand = useMemo(
+    () => netFlow(cashFlows(data.sales, data.purchases, data.expenses, data.payments, data.cashAdjustments)),
+    [data],
   );
   // Stored account balances + all bank/UPI/cheque activity (sales, purchases, expenses, payments)
-  const bankBalance =
-    data.banks.reduce((a, b) => a + (b.balance ?? b.openingBalance ?? 0), 0) +
-    netFlow(bankFlows(data.sales, data.purchases, data.expenses, data.payments));
+  const bankBalance = useMemo(
+    () =>
+      data.banks.reduce((a, b) => a + (b.balance ?? b.openingBalance ?? 0), 0) +
+      netFlow(bankFlows(data.sales, data.purchases, data.expenses, data.payments)),
+    [data],
+  );
 
   // Profit like the P&L report: net revenue − cost of goods sold − expenses
-  const periodCogs = computeCogs(periodSales, periodSaleReturns, data.items);
+  const periodCogs = useMemo(
+    () =>
+      computeCogs(
+        data.sales.filter((s) => inRange(s.date, start, end)),
+        data.saleReturns.filter((r) => inRange(r.date, start, end)),
+        data.items,
+      ),
+    [data, start, end],
+  );
   const netProfit = totalSale - totalSaleReturn - periodCogs - totalExpense;
 
   const lowStock = data.items.filter(

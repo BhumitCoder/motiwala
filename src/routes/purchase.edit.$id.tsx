@@ -2,19 +2,21 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { PurchaseRepo } from "@/repositories";
 import { InvoiceForm } from "@/components/InvoiceForm";
+import { useRepoData } from "@/hooks/useRepoData";
 import type { Invoice } from "@/types";
 import { AlertCircle } from "lucide-react";
 
 export const Route = createFileRoute("/purchase/edit/$id")({ component: EditPurchasePage });
 
 function EditPurchasePage() {
+  const _repoV = useRepoData();
   const { id } = Route.useParams();
   const navigate = useNavigate();
   const [inv, setInv] = useState<Invoice | null | undefined>(undefined);
 
   useEffect(() => {
     setInv(PurchaseRepo.get(id) ?? null);
-  }, [id]);
+  }, [id, _repoV]);
 
   if (inv === undefined) return null;
   if (inv === null) {

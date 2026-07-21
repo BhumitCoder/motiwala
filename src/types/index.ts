@@ -11,6 +11,12 @@ export interface Party {
   shippingAddress?: string;
   openingBalance: number;
   creditLimit?: number;
+  /** Soft-delete flag. An archived party is hidden from new-transaction
+   * pickers and the active parties list, but its document is kept so every
+   * existing invoice/payment/return, ledger, statement, report and dashboard
+   * total that references it stays intact. Absence of the field means active
+   * — so every party that predates this feature is active automatically. */
+  archived?: boolean;
   createdAt: string;
 }
 
@@ -45,6 +51,11 @@ export interface LineItem {
   amount: number;
   /** Snapshot of the item's purchase price when the line was created — used for stock-based COGS in P&L */
   costPrice?: number;
+  /** Price in the foreign currency, before conversion — only set on
+   * international purchases. `price` (INR) is auto-derived from this via
+   * the parent Invoice's exchangeRate/carryCostPerUnit, but stays a normal
+   * editable field so a cashier can still override the computed value. */
+  foreignPrice?: number;
 }
 
 export type PaymentMode = "cash" | "bank" | "credit" | "upi" | "cheque";
@@ -73,6 +84,18 @@ export interface Invoice {
   /** Snapshot of `paid` at the moment it was attributed to bankId, so an edit can
    * reverse exactly that amount even if `paid` later grows via Payment allocations. */
   bankPaidAmount?: number;
+  /** Purchase bills only — each line's `foreignPrice` (in the supplier's
+   * currency) gets converted to INR as `foreignPrice * exchangeRate +
+   * carryCostPerUnit`, so the landed per-unit cost (currency conversion +
+   * freight/customs, per piece) is baked into the same `price` field
+   * everything else (GST, discount, stock costing) already works off. */
+  isInternational?: boolean;
+  /** 1 unit of the foreign currency, in INR. */
+  exchangeRate?: number;
+  /** Flat per-piece freight/customs/handling cost, in INR, added on top of
+   * the converted price — distinct from `shippingCharge` (a whole-bill
+   * flat charge) since this applies per unit, before qty is multiplied in. */
+  carryCostPerUnit?: number;
   notes?: string;
   createdAt: string;
 }
@@ -221,4 +244,37 @@ export interface Company {
    * fly. Kept on Company (not its own repository) since it's a short,
    * stable list, unlike Payee which is meant to grow organically. */
   expenseCategories?: string[];
+}
+
+/** Matches the Sidebar's own groupings — permissions are granted per group,
+ * not per individual page and not as fixed roles. Settings/Team management
+ * is deliberately NOT a module here: it's owner-only everywhere, always,
+ * so a staff member can never grant themselves broader access by editing
+ * their own permissions. "reports" has no collection of its own (Reports/
+ * Daybook/GST aggregate reads across the other modules, already protected
+ * by their own rules) — it only gates the aggregated-view pages themselves. */
+export type ModuleKey = "masterData" | "sales" | "purchaseExpenses" | "cashBank" | "reports";
+
+export interface ModulePermission {
+  view: boolean;
+  edit: boolean;
+  delete: boolean;
+}
+
+/** One doc per Firebase Auth UID. The account already using this app in
+ * production becomes `isOwner: true` automatically the first time it loads
+ * after this ships (see hydrateRepos) — existing behavior is unaffected. */
+export interface TeamUser {
+  id: string;
+  email: string;
+  name: string;
+  /** Bypasses every permission check everywhere. Exactly one per business —
+   * cannot be edited or deactivated by anyone, including another owner. */
+  isOwner: boolean;
+  /** false = fully locked out (deactivated, not deleted — see Settings/Team). */
+  active: boolean;
+  /** A module missing from this map means no access at all to it, not
+   * "view only" — every level must be explicitly granted. */
+  permissions: Partial<Record<ModuleKey, ModulePermission>>;
+  createdAt: string;
 }

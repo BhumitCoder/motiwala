@@ -34,11 +34,12 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { PrintableInvoice } from "@/components/PrintableInvoice";
-import { NumInput } from "@/components/NumInput";
+import { NumInput, NumField } from "@/components/NumInput";
 import { ModePills } from "@/components/ModePills";
 import { QuickAddPartyDialog, type QuickAddPartyDetails } from "@/components/QuickAddPartyDialog";
 import { genId, newBatch, commitBatch } from "@/repositories/base";
 import { stockShortfalls } from "@/lib/stock";
+import { useRepoData } from "@/hooks/useRepoData";
 
 interface Props {
   mode: "sale" | "purchase";
@@ -46,11 +47,16 @@ interface Props {
 }
 
 export function InvoiceForm({ mode, existing }: Props) {
+  useRepoData();
   const navigate = useNavigate();
   const company = CompanyRepo.get();
   const isSale = mode === "sale";
   const repo = isSale ? SalesRepo : PurchaseRepo;
-  const partyFilter = (_p: Party) => true;
+  // Archived parties are hidden from the picker (no NEW transactions for
+  // them) — but the full `allParties` list is still used for save-time dedup
+  // below, so typing an archived party's exact name still reuses (and
+  // auto-restores) it instead of creating a duplicate.
+  const partyFilter = (p: Party) => !p.archived;
 
   const [inv, setInv] = useState<Invoice>(
     () =>
@@ -138,11 +144,6 @@ export function InvoiceForm({ mode, existing }: Props) {
   const [phoneQ, setPhoneQ] = useState(existing?.partyPhone ?? "");
   const [partyOpen, setPartyOpen] = useState(false);
   const [partyIdx, setPartyIdx] = useState(0);
-  // Enter should only commit a party pick once the user has actually typed
-  // or arrow-navigated — otherwise a reflex Enter right after the dropdown
-  // opens on focus (now showing the full list) would silently pick whatever
-  // party happens to be first.
-  const [partyNavigated, setPartyNavigated] = useState(false);
   const [numberEditing, setNumberEditing] = useState(false);
   const numberRef = useRef<HTMLInputElement>(null);
   const [saving, setSaving] = useState(false);
@@ -165,11 +166,6 @@ export function InvoiceForm({ mode, existing }: Props) {
   const [bankQ, setBankQ] = useState("");
   const [bankOpen, setBankOpen] = useState(false);
   const [bankIdx, setBankIdx] = useState(0);
-  // Enter should only commit a bank pick once the user has typed or
-  // arrow-navigated — a reflex Enter right after the dropdown opens on
-  // focus (showing every bank account) shouldn't silently pick whichever
-  // one happens to be first.
-  const [bankNavigated, setBankNavigated] = useState(false);
   useEffect(() => {
     setBankQ(banks.find((b) => b.id === inv.bankId)?.name ?? "");
   }, [inv.bankId, banks]);
@@ -257,32 +253,40 @@ export function InvoiceForm({ mode, existing }: Props) {
     setInv({ ...inv, partyId: "", partyName: "", partyPhone: "" });
     setPartyQ("");
     setPhoneQ("");
-    setPartyNavigated(false);
     setTimeout(() => partyRef.current?.focus(), 30);
   };
 
-  // Every past bill where this party bought/sold this exact item, most
-  // recent first — many shops negotiate a standing rate per customer/item
-  // that doesn't match the catalog price, so seeing (and re-using) the last
-  // few prices charged beats re-typing it from memory every time.
-  const partyItemHistory = (
-    itemId: string,
-    partyId: string,
-  ): { date: string; qty: number; price: number }[] => {
-    if (!partyId) return [];
-    const rows: { date: string; created: string; qty: number; price: number }[] = [];
+  // Every past bill where this party bought/sold each item, most recent
+  // first — many shops negotiate a standing rate per customer/item that
+  // doesn't match the catalog price, so seeing (and re-using) the last few
+  // prices charged beats re-typing it from memory every time. Indexed once
+  // per selected party: the render path asks for this per line row on every
+  // keystroke, and a fresh scan of every invoice each time made typing lag
+  // once the shop had a few thousand bills.
+  const partyHistoryIndex = useMemo(() => {
+    const map = new Map<string, { date: string; created: string; qty: number; price: number }[]>();
+    if (!inv.partyId) return map;
     for (const doc of repo.all()) {
-      if (doc.partyId !== partyId) continue;
+      if (doc.partyId !== inv.partyId) continue;
       for (const l of doc.lineItems) {
-        if (l.itemId === itemId) rows.push({ date: doc.date, created: doc.createdAt || "", qty: l.qty, price: l.price });
+        let rows = map.get(l.itemId);
+        if (!rows) map.set(l.itemId, (rows = []));
+        rows.push({ date: doc.date, created: doc.createdAt || "", qty: l.qty, price: l.price });
       }
     }
-    rows.sort((a, b) => b.date.localeCompare(a.date) || b.created.localeCompare(a.created));
-    return rows.slice(0, 5).map(({ date, qty, price }) => ({ date, qty, price }));
-  };
+    for (const rows of map.values())
+      rows.sort((a, b) => b.date.localeCompare(a.date) || b.created.localeCompare(a.created));
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inv.partyId, repo]);
 
-  const lastPartyPrice = (itemId: string, partyId: string): number | undefined =>
-    partyItemHistory(itemId, partyId)[0]?.price;
+  const partyItemHistory = (itemId: string): { date: string; qty: number; price: number }[] =>
+    (partyHistoryIndex.get(itemId) ?? [])
+      .slice(0, 5)
+      .map(({ date, qty, price }) => ({ date, qty, price }));
+
+  const lastPartyPrice = (itemId: string): number | undefined =>
+    partyHistoryIndex.get(itemId)?.[0]?.price;
 
   // Returns the id of the line that was added/updated, so the caller can move
   // focus straight to that row's Qty field for fast entry.
@@ -294,7 +298,7 @@ export function InvoiceForm({ mode, existing }: Props) {
       toast.info(`${it.name} — quantity increased to ${existingLine.qty + 1}`);
       return existingLine.id;
     }
-    const historicalPrice = lastPartyPrice(it.id, inv.partyId);
+    const historicalPrice = lastPartyPrice(it.id);
     const line: LineItem = {
       id: genId(),
       itemId: it.id,
@@ -350,6 +354,12 @@ export function InvoiceForm({ mode, existing }: Props) {
     toast.success(`New item added: ${newItem.name}`);
   };
 
+  // Landed per-unit cost for an international purchase: convert the foreign
+  // price to INR, then add the flat per-piece freight/customs cost — e.g.
+  // 44 (foreign) * 14 (rate) + 10 (carry) = ₹636/pc.
+  const landedPrice = (foreignPrice: number) =>
+    r2(foreignPrice * (inv.exchangeRate ?? 0) + (inv.carryCostPerUnit ?? 0));
+
   const updateLine = (id: string, patch: Partial<LineItem>) => {
     const lines = inv.lineItems.map((l) => {
       if (l.id !== id) return l;
@@ -358,11 +368,38 @@ export function InvoiceForm({ mode, existing }: Props) {
       // GST rate can never flip the line amount negative.
       nl.discountPct = Math.min(100, Math.max(0, nl.discountPct));
       nl.gstRate = Math.max(0, nl.gstRate);
+      // Auto-fill the INR price whenever the foreign price changes — still
+      // a normal editable field afterward, so a cashier can override it.
+      if (inv.isInternational && "foreignPrice" in patch && nl.foreignPrice != null) {
+        nl.price = landedPrice(nl.foreignPrice);
+      }
       const gstMult = gstOn ? 1 + nl.gstRate / 100 : 1;
       nl.amount = r2(r2(nl.qty * nl.price * (1 - nl.discountPct / 100)) * gstMult);
       return nl;
     });
     setInv({ ...inv, lineItems: lines, ...recalc(lines) });
+  };
+
+  // Changing the exchange rate or per-piece carry cost after items are
+  // already on the bill should re-price every line that has a foreign price
+  // set — otherwise "auto-fill" would only ever apply retroactively to the
+  // next item typed, leaving already-added rows silently stale.
+  const updateInternational = (patch: {
+    isInternational?: boolean;
+    exchangeRate?: number;
+    carryCostPerUnit?: number;
+  }) => {
+    const merged = { ...inv, ...patch };
+    const rate = merged.exchangeRate ?? 0;
+    const carry = merged.carryCostPerUnit ?? 0;
+    const lines = inv.lineItems.map((l) => {
+      if (l.foreignPrice == null) return l;
+      const price = r2(l.foreignPrice * rate + carry);
+      const gstMult = gstOn ? 1 + l.gstRate / 100 : 1;
+      const amount = r2(r2(l.qty * price * (1 - l.discountPct / 100)) * gstMult);
+      return { ...l, price, amount };
+    });
+    setInv({ ...merged, lineItems: lines, ...recalc(lines) });
   };
 
   const removeLine = (id: string) => {
@@ -397,7 +434,7 @@ export function InvoiceForm({ mode, existing }: Props) {
       toast.info(`${it.name} — merged into existing line, quantity increased to ${mergedQty}`);
       return dup.id;
     }
-    const historicalPrice = lastPartyPrice(it.id, inv.partyId);
+    const historicalPrice = lastPartyPrice(it.id);
     updateLine(lineId, {
       itemId: it.id,
       name: it.name,
@@ -405,6 +442,10 @@ export function InvoiceForm({ mode, existing }: Props) {
       gstRate: it.gstRate,
       price: historicalPrice ?? (isSale ? it.salePrice || it.purchasePrice : it.purchasePrice),
       costPrice: it.purchasePrice,
+      // The old item's foreign price must not survive the swap — a later
+      // exchange-rate change re-prices every line that still has one, which
+      // would overwrite the new item's price with the OLD item's landed cost.
+      foreignPrice: undefined,
     });
     return lineId;
   };
@@ -443,6 +484,33 @@ export function InvoiceForm({ mode, existing }: Props) {
     paid: number,
     andPrint: boolean,
   ) => {
+    // Changing the party on a bill that already has payments linked to it
+    // would leave that received money attributed to the OLD party — the
+    // dashboard (which reads invoice.paid) and the party statement (which
+    // reads the payment's own partyId) would then disagree, and the cash
+    // would show under the wrong name. Block it: the payment must be removed
+    // (or the bill left on its original party) first.
+    if (existing?.id) {
+      const newPartyId = "create" in party ? party.create.id : party.id;
+      if (newPartyId !== existing.partyId) {
+        const linkedPayment = PaymentRepo.all().some(
+          (p) =>
+            p.allocations?.some((a) => a.invoiceId === existing.id) ||
+            (!p.allocations?.length &&
+              (p.ref ?? "")
+                .split(",")
+                .map((s) => s.trim())
+                .includes(existing.number.trim())),
+        );
+        if (linkedPayment) {
+          toast.error(
+            "This bill has payments linked to its current party. Delete those payments (or keep the same party) before changing it — otherwise the received money would stay under the old party.",
+          );
+          return;
+        }
+      }
+    }
+
     savingRef.current = true;
     setSaving(true);
 
@@ -459,6 +527,15 @@ export function InvoiceForm({ mode, existing }: Props) {
     } else {
       partyId = party.id;
       partyName = party.name;
+      // Reusing an archived party for a NEW bill means they're active again —
+      // restore them in the same batch so they reappear in pickers and the
+      // active list (Zoho/QuickBooks "reactivate on use"). Only on a new bill:
+      // merely editing an OLD bill for an already-archived party must not
+      // silently un-archive it.
+      if (!existing?.id && PartyRepo.get(partyId)?.archived) {
+        PartyRepo.updateBatched(batch, partyId, { archived: false });
+        setAllParties(PartyRepo.all());
+      }
     }
 
     const finalInv: Invoice = {
@@ -580,6 +657,45 @@ export function InvoiceForm({ mode, existing }: Props) {
       }
     }
 
+    // If the bill NUMBER was changed on edit, the records that reference it by
+    // that string (returns via originalRef, and payments via their allocation
+    // display number / legacy ref) would otherwise point at a number that no
+    // longer exists — the return's over-return cap silently stops matching and
+    // the linked-invoice display goes stale. Cascade the rename to them in the
+    // same batch. (Payment MATH keys on invoiceId, so balances stay correct
+    // regardless; this keeps the human-readable links right too.)
+    if (existing?.id) {
+      const oldNum = (existing.number ?? "").trim();
+      const newNum = finalInv.number;
+      if (oldNum && oldNum !== newNum) {
+        const retRepo = isSale ? SaleReturnRepo : PurchaseReturnRepo;
+        for (const ret of retRepo.all()) {
+          if ((ret.originalRef ?? "").trim() === oldNum) {
+            retRepo.updateBatched(batch, ret.id, { originalRef: newNum });
+          }
+        }
+        for (const p of PaymentRepo.all()) {
+          let changed = false;
+          let allocations = p.allocations;
+          if (p.allocations?.some((a) => a.invoiceId === existing.id)) {
+            allocations = p.allocations.map((a) =>
+              a.invoiceId === existing.id ? { ...a, number: newNum } : a,
+            );
+            changed = true;
+          }
+          let ref = p.ref;
+          if (p.ref) {
+            const tokens = p.ref.split(",").map((t) => t.trim());
+            if (tokens.includes(oldNum)) {
+              ref = tokens.map((t) => (t === oldNum ? newNum : t)).join(", ");
+              changed = true;
+            }
+          }
+          if (changed) PaymentRepo.updateBatched(batch, p.id, { allocations, ref });
+        }
+      }
+    }
+
     let savedId: string;
     if (existing?.id) {
       repo.updateBatched(batch, existing.id, finalInv);
@@ -619,6 +735,40 @@ export function InvoiceForm({ mode, existing }: Props) {
       if (shortfalls.length) {
         toast.error(`Not enough stock — ${shortfalls.join(", ")}`);
         return;
+      }
+    }
+    // Editing an existing bill must never drop an item's quantity below what
+    // has already been returned against this exact bill — otherwise returned
+    // qty exceeds sold/purchased qty and both stock and the party balance get
+    // over-credited (with no error to signal it). The return side has its own
+    // over-return cap; this is the same guard from the bill side.
+    if (existing?.id) {
+      const returnRepo = isSale ? SaleReturnRepo : PurchaseReturnRepo;
+      const returnedByItem = new Map<string, number>();
+      for (const ret of returnRepo.all()) {
+        if ((ret.originalRef ?? "").trim() !== existing.number.trim()) continue;
+        for (const l of ret.lineItems) {
+          returnedByItem.set(l.itemId, (returnedByItem.get(l.itemId) ?? 0) + l.qty);
+        }
+      }
+      if (returnedByItem.size) {
+        const newQtyByItem = new Map<string, number>();
+        for (const l of inv.lineItems) {
+          newQtyByItem.set(l.itemId, (newQtyByItem.get(l.itemId) ?? 0) + l.qty);
+        }
+        for (const [itemId, returned] of returnedByItem) {
+          const nowQty = newQtyByItem.get(itemId) ?? 0;
+          if (nowQty < returned - 0.0001) {
+            const name =
+              inv.lineItems.find((l) => l.itemId === itemId)?.name ??
+              ItemRepo.get(itemId)?.name ??
+              "this item";
+            toast.error(
+              `Can't reduce "${name}" to ${nowQty} — ${returned} already returned against ${existing.number}. Delete or adjust that return first.`,
+            );
+            return;
+          }
+        }
       }
     }
     const number = inv.number.trim();
@@ -717,31 +867,120 @@ export function InvoiceForm({ mode, existing }: Props) {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="px-4 md:px-5 py-3 border-b bg-card flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-3 min-w-0">
-          <div
-            className={`h-10 w-10 rounded-md flex items-center justify-center ${isSale ? "bg-success-soft text-success" : "bg-warning-soft text-warning"}`}
-          >
-            {isSale ? <Receipt className="h-5 w-5" /> : <FileText className="h-5 w-5" />}
+      <div className="px-4 md:px-5 py-3 border-b bg-card flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="flex items-center justify-between gap-3 min-w-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <div
+              className={`h-10 w-10 rounded-md flex items-center justify-center ${isSale ? "bg-success-soft text-success" : "bg-warning-soft text-warning"}`}
+            >
+              {isSale ? <Receipt className="h-5 w-5" /> : <FileText className="h-5 w-5" />}
+            </div>
+            <div className="min-w-0">
+              <h1 className="text-[17px] font-bold tracking-tight leading-tight">
+                {existing ? "Edit" : "New"} {isSale ? "Sale Invoice" : "Purchase Bill"}
+              </h1>
+              <p className="text-[11px] text-muted-foreground">
+                <span className="font-mono font-semibold text-foreground">{inv.number}</span>
+              </p>
+            </div>
           </div>
-          <div className="min-w-0">
-            <h1 className="text-[17px] font-bold tracking-tight leading-tight">
-              {existing ? "Edit" : "New"} {isSale ? "Sale Invoice" : "Purchase Bill"}
-            </h1>
-            <p className="text-[11px] text-muted-foreground">
-              <span className="font-mono font-semibold text-foreground">{inv.number}</span>
-            </p>
-          </div>
+          {isSale && (
+            <label className="sm:hidden shrink-0 flex items-center gap-1.5 h-7 px-2.5 rounded-md border bg-background cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={gstOn}
+                onChange={toggleGst}
+                className="accent-primary h-3.5 w-3.5"
+              />
+              <span className="text-[11px] font-semibold">GST Bill</span>
+            </label>
+          )}
         </div>
-        <div className="flex items-center gap-2">
-          {/* GST toggle */}
-          <label className="flex items-center gap-2 h-9 px-3 rounded-md border bg-background cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={gstOn}
-              onChange={toggleGst}
-              className="accent-primary"
-            />
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:flex-wrap sm:justify-end">
+          {/* Toggles — grouped together as one row so they read as a clean
+              pair of switches instead of separate borderline-width chips
+              each wrapping onto their own line. */}
+          <div
+            className={
+              !isSale
+                ? "grid grid-cols-2 gap-2 sm:flex sm:items-center sm:w-auto"
+                : "flex items-center justify-end gap-2"
+            }
+          >
+            {!isSale && (
+              <label className="flex items-center justify-center gap-2 h-9 px-3 rounded-md border bg-background cursor-pointer select-none sm:justify-start sm:w-auto">
+                <input
+                  type="checkbox"
+                  checked={!!inv.isInternational}
+                  onChange={(e) => updateInternational({ isInternational: e.target.checked })}
+                  className="accent-primary"
+                />
+                <span className="text-[12px] font-semibold whitespace-nowrap">International Purchase</span>
+              </label>
+            )}
+            {!isSale && (
+              <label className="sm:hidden shrink-0 flex items-center gap-2 h-9 px-3 rounded-md border bg-background cursor-pointer select-none">
+                <input type="checkbox" checked={gstOn} onChange={toggleGst} className="accent-primary" />
+                <span className="text-[12px] font-semibold">GST Bill</span>
+              </label>
+            )}
+          </div>
+
+          {!isSale && inv.isInternational && (
+            <>
+              {/* Mobile: proper label-above-input fields in a 2-col grid —
+                  reads as a form, not a squeezed inline pill. */}
+              <div className="sm:hidden grid grid-cols-2 gap-2">
+                <label
+                  className="flex flex-col gap-1 px-2.5 py-2 rounded-md border bg-background"
+                  title="How many rupees 1 unit of the supplier's currency is worth"
+                >
+                  <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
+                    Exchange Rate (₹)
+                  </span>
+                  <NumInput
+                    value={inv.exchangeRate ?? 0}
+                    onValue={(n) => updateInternational({ exchangeRate: n })}
+                    className="w-full h-7 px-1.5 text-right border rounded bg-background focus:border-primary outline-none"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 px-2.5 py-2 rounded-md border bg-background">
+                  <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
+                    Carry cost/pc (₹)
+                  </span>
+                  <NumInput
+                    value={inv.carryCostPerUnit ?? 0}
+                    onValue={(n) => updateInternational({ carryCostPerUnit: n })}
+                    className="w-full h-7 px-1.5 text-right border rounded bg-background focus:border-primary outline-none"
+                  />
+                </label>
+              </div>
+              {/* Desktop: original compact inline pills, unchanged */}
+              <label
+                className="hidden sm:flex items-center gap-1.5 h-9 px-2.5 rounded-md border bg-background text-[12px]"
+                title="How many rupees 1 unit of the supplier's currency is worth"
+              >
+                <span className="text-muted-foreground whitespace-nowrap">Exchange Rate (₹)</span>
+                <NumInput
+                  value={inv.exchangeRate ?? 0}
+                  onValue={(n) => updateInternational({ exchangeRate: n })}
+                  className="w-16 h-6 px-1 text-right border rounded bg-background focus:border-primary outline-none"
+                />
+              </label>
+              <label className="hidden sm:flex items-center gap-1.5 h-9 px-2.5 rounded-md border bg-background text-[12px]">
+                <span className="text-muted-foreground whitespace-nowrap">Carry cost/pc</span>
+                <NumInput
+                  value={inv.carryCostPerUnit ?? 0}
+                  onValue={(n) => updateInternational({ carryCostPerUnit: n })}
+                  className="w-16 h-6 px-1 text-right border rounded bg-background focus:border-primary outline-none"
+                />
+                <span className="text-muted-foreground">₹</span>
+              </label>
+            </>
+          )}
+          {/* GST toggle — desktop position */}
+          <label className="hidden sm:flex items-center gap-2 h-9 px-3 rounded-md border bg-background cursor-pointer select-none">
+            <input type="checkbox" checked={gstOn} onChange={toggleGst} className="accent-primary" />
             <span className="text-[12px] font-semibold">GST Bill</span>
           </label>
         </div>
@@ -750,18 +989,18 @@ export function InvoiceForm({ mode, existing }: Props) {
       <div className="p-4 md:p-5 space-y-4 overflow-auto flex-1 bg-muted/30">
         {/* Party + meta */}
         <div className="bg-card border rounded-lg shadow-card p-4">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 mb-3">
             <span className="text-[12px] font-semibold uppercase tracking-wider text-muted-foreground">
               {isSale ? "Customer Details" : "Supplier Details"}
             </span>
             {inv.partyId ? (
-              <span className="inline-flex items-center gap-2">
-                <span className="text-[11px] inline-flex items-center gap-1 text-success font-medium bg-success-soft px-2 py-0.5 rounded">
+              <span className="inline-flex items-center gap-1.5 flex-wrap">
+                <span className="text-[11px] inline-flex items-center gap-1 text-success font-medium bg-success-soft px-2 py-0.5 rounded shrink-0">
                   ✓ Existing party
                 </span>
                 {partyBalance !== null && Math.abs(partyBalance) > 0.01 && (
                   <span
-                    className={`text-[11px] font-semibold px-2 py-0.5 rounded ${partyBalance > 0 ? "text-destructive bg-destructive/10" : "text-success bg-success-soft"}`}
+                    className={`text-[11px] font-semibold px-2 py-0.5 rounded shrink-0 ${partyBalance > 0 ? "text-destructive bg-destructive/10" : "text-success bg-success-soft"}`}
                   >
                     {partyBalance > 0
                       ? `${isSale ? "Receivable" : "Payable"}: ${fmtMoney(partyBalance)}`
@@ -770,7 +1009,7 @@ export function InvoiceForm({ mode, existing }: Props) {
                 )}
               </span>
             ) : partyQ || phoneQ ? (
-              <span className="text-[11px] inline-flex items-center gap-1 text-primary font-medium bg-primary-soft px-2 py-0.5 rounded">
+              <span className="text-[11px] inline-flex items-center gap-1 text-primary font-medium bg-primary-soft px-2 py-0.5 rounded self-start">
                 <UserPlus className="h-3 w-3" /> New party — details asked on save
               </span>
             ) : null}
@@ -796,15 +1035,13 @@ export function InvoiceForm({ mode, existing }: Props) {
                     onKeyDown={(e) => {
                       if (e.key === "ArrowDown") {
                         e.preventDefault();
-                        setPartyNavigated(true);
                         setPartyIdx((i) => Math.min(partySuggests.length - 1, i + 1));
                       } else if (e.key === "ArrowUp") {
                         e.preventDefault();
-                        setPartyNavigated(true);
                         setPartyIdx((i) => Math.max(0, i - 1));
                       } else if (e.key === "Enter") {
                         e.preventDefault();
-                        if (partySuggests[partyIdx] && (partyQ.trim() || partyNavigated)) {
+                        if (partySuggests[partyIdx]) {
                           selectParty(partySuggests[partyIdx]);
                         } else phoneRef.current?.focus();
                       }
@@ -943,6 +1180,9 @@ export function InvoiceForm({ mode, existing }: Props) {
                   <th className="text-left px-3 py-2">Item</th>
                   <th className="text-right w-20 py-2 px-2">Qty</th>
                   <th className="text-left w-20 py-2 px-2">Unit</th>
+                  {inv.isInternational && (
+                    <th className="text-right w-28 py-2 px-2 whitespace-nowrap">Foreign Price</th>
+                  )}
                   <th className="text-right w-24 py-2 px-2">Price</th>
                   <th className="text-right w-20 py-2 px-2">Disc%</th>
                   {gstOn && <th className="text-right w-20 py-2 px-2">GST%</th>}
@@ -984,12 +1224,21 @@ export function InvoiceForm({ mode, existing }: Props) {
                         className="w-full h-7 px-1.5 border rounded bg-background focus:border-primary outline-none"
                       />
                     </td>
+                    {inv.isInternational && (
+                      <td className="py-1.5 px-1">
+                        <NumInput
+                          value={l.foreignPrice ?? 0}
+                          onValue={(n) => updateLine(l.id, { foreignPrice: n })}
+                          className="w-full h-7 px-1.5 text-right border rounded bg-background focus:border-primary outline-none"
+                        />
+                      </td>
+                    )}
                     <td className="py-1.5 px-1 relative">
                       {inv.partyId ? (
                         <PriceHistoryCell
                           value={l.price}
                           onValue={(n) => updateLine(l.id, { price: n })}
-                          history={partyItemHistory(l.itemId, inv.partyId)}
+                          history={partyItemHistory(l.itemId)}
                           partyName={inv.partyName}
                           isSale={isSale}
                         />
@@ -1037,6 +1286,7 @@ export function InvoiceForm({ mode, existing }: Props) {
                     items={items}
                     gstOn={gstOn}
                     isSale={isSale}
+                    isInternational={!!inv.isInternational}
                     onAdd={(it) => {
                       focusQtyId.current = addLineItem(it);
                       completePendingRow(id);
@@ -1098,7 +1348,6 @@ export function InvoiceForm({ mode, existing }: Props) {
                 <ModePills
                   value={inv.paymentMode}
                   onChange={(newMode: PaymentMode) => {
-                    if (newMode !== "bank") setBankNavigated(false);
                     setInv({
                       ...inv,
                       paymentMode: newMode,
@@ -1126,15 +1375,13 @@ export function InvoiceForm({ mode, existing }: Props) {
                     onKeyDown={(e) => {
                       if (e.key === "ArrowDown") {
                         e.preventDefault();
-                        setBankNavigated(true);
                         setBankIdx((i) => Math.min(bankSuggests.length - 1, i + 1));
                       } else if (e.key === "ArrowUp") {
                         e.preventDefault();
-                        setBankNavigated(true);
                         setBankIdx((i) => Math.max(0, i - 1));
                       } else if (e.key === "Enter") {
                         e.preventDefault();
-                        if (bankSuggests[bankIdx] && (bankQ.trim() || bankNavigated)) {
+                        if (bankSuggests[bankIdx]) {
                           selectBank(bankSuggests[bankIdx]);
                         }
                       }
@@ -1183,7 +1430,13 @@ export function InvoiceForm({ mode, existing }: Props) {
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
-                      onClick={() => setInv({ ...inv, paid: inv.total })}
+                      onClick={(e) => {
+                        // Safari doesn't focus a clicked <button> by default
+                        // (Chrome/Firefox do) — force it so Tab/Enter still
+                        // continues the form flow from here on Safari too.
+                        e.currentTarget.focus();
+                        setInv({ ...inv, paid: inv.total });
+                      }}
                       className="h-8 px-2.5 rounded-md border bg-success-soft text-success text-[11px] font-semibold hover:opacity-80 focus:ring-2 focus:ring-ring/20 outline-none transition"
                       title="Received full amount"
                     >
@@ -1228,15 +1481,27 @@ export function InvoiceForm({ mode, existing }: Props) {
       {/* Bottom action bar — kept last in DOM/tab order on purpose: the whole
           form (party, items, totals, notes) is fully keyboard-navigable via
           Tab, and this is where that flow naturally lands to save. */}
-      <div className="px-4 md:px-5 py-3 border-t bg-card flex items-center justify-end gap-2 flex-wrap">
-        <span className="text-[11px] text-muted-foreground mr-auto">
+      <div className="px-4 md:px-5 py-3 border-t bg-card flex items-center gap-2">
+        {/* Keyboard hint is meaningless on a touchscreen — desktop only */}
+        <span className="hidden md:inline text-[11px] text-muted-foreground mr-auto">
           Tab/Enter to move · Ctrl+S save · Esc cancel
         </span>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => navigate({ to: isSale ? "/sales" : "/purchase" })}
+          className="shrink-0"
+        >
+          <X className="h-3.5 w-3.5" /> Cancel
+        </Button>
+        <Button variant="outline" size="sm" onClick={() => save(true)} disabled={saving} className="shrink-0">
+          <Printer className="h-3.5 w-3.5" /> Save & Print
+        </Button>
         <Button
           size="sm"
           onClick={() => save()}
           disabled={saving}
-          className="bg-primary text-primary-foreground"
+          className="flex-1 md:flex-none bg-primary text-primary-foreground"
         >
           {saving ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1244,16 +1509,6 @@ export function InvoiceForm({ mode, existing }: Props) {
             <Save className="h-3.5 w-3.5" />
           )}
           {saving ? "Saving…" : "Save"}
-        </Button>
-        <Button variant="outline" size="sm" onClick={() => save(true)} disabled={saving}>
-          <Printer className="h-3.5 w-3.5" /> Save & Print
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => navigate({ to: isSale ? "/sales" : "/purchase" })}
-        >
-          <X className="h-3.5 w-3.5" /> Cancel
         </Button>
       </div>
       <PrintableInvoice inv={inv} company={company} mode={mode} />
@@ -1300,6 +1555,7 @@ function ItemEntryRow({
   onAddNew,
   gstOn,
   isSale,
+  isInternational,
   registerInput,
 }: {
   items: Item[];
@@ -1307,15 +1563,12 @@ function ItemEntryRow({
   onAddNew: (name: string) => void;
   gstOn: boolean;
   isSale: boolean;
+  isInternational: boolean;
   registerInput: (el: HTMLInputElement | null) => void;
 }) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const [idx, setIdx] = useState(0);
-  // Enter should only commit a pick once the user has typed or
-  // arrow-navigated — a reflex Enter right after the dropdown opens on
-  // focus (now showing every item) shouldn't silently add a phantom line.
-  const [navigated, setNavigated] = useState(false);
   const inputElRef = useRef<HTMLInputElement | null>(null);
   const [dropdownRect, setDropdownRect] = useState<{
     top: number;
@@ -1347,8 +1600,9 @@ function ItemEntryRow({
   }, [open]);
 
   // Empty query — browse the full item catalog (like a combobox), instead
-  // of showing nothing until the user starts typing. Enter is still guarded
-  // against silently adding a phantom line (see `navigated` above).
+  // of showing nothing until the user starts typing. Enter always commits
+  // whichever row is highlighted (index 0 by default), matching what's
+  // visually shown as selected.
   const suggests = q.trim()
     ? items
         .filter(
@@ -1396,15 +1650,13 @@ function ItemEntryRow({
           onKeyDown={(e) => {
             if (e.key === "ArrowDown") {
               e.preventDefault();
-              setNavigated(true);
               setIdx((i) => Math.min(optionCount - 1, i + 1));
             } else if (e.key === "ArrowUp") {
               e.preventDefault();
-              setNavigated(true);
               setIdx((i) => Math.max(0, i - 1));
             } else if (e.key === "Enter") {
               e.preventDefault();
-              if (optionCount > 0 && (q.trim() || navigated)) choose(idx);
+              if (optionCount > 0) choose(idx);
             }
           }}
           placeholder="Type item name to add…"
@@ -1480,6 +1732,14 @@ function ItemEntryRow({
           className="w-full h-7 px-1.5 border rounded bg-muted/40 text-muted-foreground/50 outline-none cursor-not-allowed"
         />
       </td>
+      {isInternational && (
+        <td className="py-1.5 px-1">
+          <input
+            disabled
+            className="w-full h-7 px-1.5 text-right border rounded bg-muted/40 text-muted-foreground/50 outline-none cursor-not-allowed"
+          />
+        </td>
+      )}
       <td className="py-1.5 px-1">
         <input
           disabled
@@ -1828,7 +2088,7 @@ function QuickAddItemDialog({
           this {isSale ? "invoice" : "bill"}.
         </p>
         <form onSubmit={submit} className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div className="col-span-2 relative">
+          <div className="sm:col-span-2 relative">
             <Field
               ref={firstRef}
               label="Name *"
@@ -1874,33 +2134,30 @@ function QuickAddItemDialog({
             )}
           </div>
           <Field label="Unit" value={unit} onChange={(e) => setUnit(e.target.value)} />
-          <Field
+          <NumField
             label="GST Rate (%)"
-            type="number"
             value={gstRate}
-            onChange={(e) => setGstRate(Math.max(0, parseFloat(e.target.value) || 0))}
+            onValue={(n) => setGstRate(Math.max(0, n))}
           />
-          <Field
+          <NumField
             label={isSale ? "Sale Price *" : "Purchase Price *"}
-            type="number"
             value={isSale ? salePrice : purchasePrice}
-            onChange={(e) => {
-              const v = Math.max(0, parseFloat(e.target.value) || 0);
+            onValue={(n) => {
+              const v = Math.max(0, n);
               if (isSale) setSalePrice(v);
               else setPurchasePrice(v);
             }}
           />
-          <Field
+          <NumField
             label={isSale ? "Purchase Price" : "Sale Price"}
-            type="number"
             value={isSale ? purchasePrice : salePrice}
-            onChange={(e) => {
-              const v = Math.max(0, parseFloat(e.target.value) || 0);
+            onValue={(n) => {
+              const v = Math.max(0, n);
               if (isSale) setPurchasePrice(v);
               else setSalePrice(v);
             }}
           />
-          <div className="col-span-2 flex justify-end gap-2 mt-2">
+          <div className="sm:col-span-2 flex justify-end gap-2 mt-2">
             <Button type="button" variant="outline" onClick={onCancel}>
               Cancel
             </Button>

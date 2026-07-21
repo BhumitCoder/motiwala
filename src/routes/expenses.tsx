@@ -2,7 +2,9 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable, type Column } from "@/components/DataTable";
+import { usePagination } from "@/components/Pagination";
 import { ExpenseRepo, BankRepo, PayeeRepo, CompanyRepo } from "@/repositories";
+import { useRepoData } from "@/hooks/useRepoData";
 import { newBatch, commitBatch, genId } from "@/repositories/base";
 import type { Expense, BankAccount, Payee } from "@/types";
 import { Button } from "@/components/ui/button";
@@ -12,19 +14,55 @@ import { NumField } from "@/components/NumInput";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { ModePills, fmtMode } from "@/components/ModePills";
 import { fmtMoney, fmtDate, today } from "@/lib/format";
-import { Plus, Receipt } from "lucide-react";
+import { Plus, Receipt, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { usePermissions } from "@/hooks/usePermissions";
 
 export const Route = createFileRoute("/expenses")({ component: ExpensesPage });
 
 function ExpensesPage() {
+  const { isOwner, canEdit, canDelete } = usePermissions();
+  const editAllowed = isOwner || canEdit("purchaseExpenses");
+  const deleteAllowed = isOwner || canDelete("purchaseExpenses");
   const [rows, setRows] = useState<Expense[]>([]);
   const [open, setOpen] = useState(false);
   const [edit, setEdit] = useState<Expense | null>(null);
   const refresh = () => setRows(ExpenseRepo.all());
-  useEffect(refresh, []);
+  const _repoV = useRepoData();
+  useEffect(refresh, [_repoV]);
+
+  const pg = usePagination(rows);
 
   const total = rows.reduce((s, r) => s + r.amount, 0);
+
+  const handleDelete = (r: Expense) => {
+    if (!deleteAllowed) {
+      toast.error("You don't have permission to delete expenses");
+      return;
+    }
+    if (confirm("Delete expense?")) {
+      // Bail if another device already deleted it — the bank reversal below is
+      // a blind atomic increment, so running it twice would add the money back
+      // to the account twice.
+      const live = ExpenseRepo.get(r.id);
+      if (!live) {
+        toast.info("This expense was already deleted");
+        refresh();
+        return;
+      }
+      // Money that was taken off a specific bank account when this
+      // expense was recorded must be moved back on, or the account
+      // balance stays permanently wrong after the expense is gone.
+      const batch = newBatch();
+      if (live.paymentMode === "bank" && live.bankId && BankRepo.get(live.bankId)) {
+        BankRepo.adjustFieldBatched(batch, live.bankId, "balance", live.amount);
+      }
+      ExpenseRepo.removeBatched(batch, live.id);
+      commitBatch(batch, "delete expense");
+      refresh();
+      toast.success("Deleted");
+    }
+  };
 
   const columns: Column<Expense>[] = [
     {
@@ -67,42 +105,91 @@ function ExpensesPage() {
         icon={<Receipt className="h-5 w-5" />}
         iconClassName="text-warning"
         actions={
-          <Button
-            size="sm"
-            onClick={() => {
-              setEdit(null);
-              setOpen(true);
-            }}
-          >
-            <Plus className="h-3.5 w-3.5" /> New Expense
-          </Button>
+          editAllowed && (
+            <Button
+              size="sm"
+              onClick={() => {
+                setEdit(null);
+                setOpen(true);
+              }}
+              className="w-full sm:w-auto"
+            >
+              <Plus className="h-3.5 w-3.5" /> New Expense
+            </Button>
+          )
         }
       />
-      <div className="p-6 flex-1 min-h-0 flex">
+      {/* Mobile card list — a table of 6 columns doesn't fit a phone; this
+          is the same data as one tappable card per expense instead. */}
+      <div className="md:hidden flex-1 overflow-auto">
+        {rows.length === 0 ? (
+          <div className="text-center py-16 text-gray-400">
+            <Receipt className="h-10 w-10 mx-auto mb-3 text-gray-200" />
+            <p className="font-medium">No expenses found</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-100">
+            {pg.paged.map((r) => (
+              <div
+                key={r.id}
+                onClick={() => {
+                  if (!editAllowed) return;
+                  setEdit(r);
+                  setOpen(true);
+                }}
+                className={`bg-white px-4 py-3 flex items-center gap-3 ${editAllowed ? "active:bg-gray-50 cursor-pointer" : ""}`}
+              >
+                <div className="h-9 w-9 rounded-full flex items-center justify-center shrink-0 bg-rose-50 text-rose-600">
+                  <Receipt className="h-4 w-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-semibold text-[13px] text-gray-800 truncate leading-tight">
+                      {r.category}
+                    </p>
+                    <p className="font-bold text-[13px] text-rose-600 tabular-nums shrink-0 leading-tight">
+                      −{fmtMoney(r.amount)}
+                    </p>
+                  </div>
+                  <p className="text-[11px] text-gray-400 mt-1 truncate">
+                    {fmtDate(r.date)} · {r.payeeName ?? "—"} · {fmtMode(r.paymentMode)}
+                    {r.notes ? ` · ${r.notes}` : ""}
+                  </p>
+                </div>
+                {deleteAllowed && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDelete(r);
+                    }}
+                    className="p-1.5 rounded hover:bg-rose-50 text-gray-300 hover:text-rose-500 transition shrink-0 -mr-1.5"
+                    title="Delete expense"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Table (desktop) */}
+      <div className="hidden md:flex flex-1 min-h-0 p-6">
         <DataTable
           columns={columns}
           rows={rows}
           rowKey={(r) => r.id}
-          activateOnClick
-          onRowActivate={(r) => {
-            setEdit(r);
-            setOpen(true);
-          }}
-          onDelete={(r) => {
-            if (confirm("Delete expense?")) {
-              // Money that was taken off a specific bank account when this
-              // expense was recorded must be moved back on, or the account
-              // balance stays permanently wrong after the expense is gone.
-              const batch = newBatch();
-              if (r.paymentMode === "bank" && r.bankId && BankRepo.get(r.bankId)) {
-                BankRepo.adjustFieldBatched(batch, r.bankId, "balance", r.amount);
-              }
-              ExpenseRepo.removeBatched(batch, r.id);
-              commitBatch(batch, "delete expense");
-              refresh();
-              toast.success("Deleted");
-            }
-          }}
+          activateOnClick={editAllowed}
+          onRowActivate={
+            editAllowed
+              ? (r) => {
+                  setEdit(r);
+                  setOpen(true);
+                }
+              : undefined
+          }
+          onDelete={handleDelete}
         />
       </div>
       <ExpenseDialog open={open} onOpenChange={setOpen} expense={edit} onSaved={refresh} />
@@ -124,6 +211,9 @@ function ExpenseDialog({
   const firstRef = useRef<HTMLButtonElement>(null);
   const [f, setF] = useState<Partial<Expense>>({});
   const [saving, setSaving] = useState(false);
+  // Synchronous double-submit guard — prevents a same-tick double Enter from
+  // recording the expense (and its bank-balance move) twice.
+  const savingRef = useRef(false);
   const [banks] = useState(() => BankRepo.all());
   const [payees, setPayees] = useState<Payee[]>([]);
   const [categories] = useState(() => CompanyRepo.get().expenseCategories ?? []);
@@ -137,8 +227,8 @@ function ExpenseDialog({
       setF(expense ?? { date: today(), paymentMode: "cash", amount: 0, category: "" });
       setPayees(PayeeRepo.all());
       setPayeeQ(expense?.payeeName ?? "");
-      setPayeeNavigated(false);
       setSaving(false);
+      savingRef.current = false;
       setTimeout(() => firstRef.current?.focus(), 50);
     }
   }, [open, expense]);
@@ -149,11 +239,6 @@ function ExpenseDialog({
   const [bankQ, setBankQ] = useState("");
   const [bankOpen, setBankOpen] = useState(false);
   const [bankIdx, setBankIdx] = useState(0);
-  // Enter should only commit a bank pick once the user has typed or
-  // arrow-navigated — a reflex Enter right after the dropdown opens on
-  // focus (showing every bank account) shouldn't silently pick whichever
-  // one happens to be first.
-  const [bankNavigated, setBankNavigated] = useState(false);
   useEffect(() => {
     setBankQ(banks.find((b) => b.id === f.bankId)?.name ?? "");
   }, [f.bankId, banks]);
@@ -175,7 +260,6 @@ function ExpenseDialog({
   const [payeeQ, setPayeeQ] = useState("");
   const [payeeOpen, setPayeeOpen] = useState(false);
   const [payeeIdx, setPayeeIdx] = useState(0);
-  const [payeeNavigated, setPayeeNavigated] = useState(false);
   const payeeSuggests = payees.filter((p) => {
     const q = payeeQ.trim().toLowerCase();
     if (!q) return true;
@@ -196,7 +280,7 @@ function ExpenseDialog({
 
   const save = (e: React.FormEvent) => {
     e.preventDefault();
-    if (saving) return;
+    if (savingRef.current) return;
     if (!f.category?.trim()) {
       toast.error("Category required");
       return;
@@ -213,6 +297,7 @@ function ExpenseDialog({
       toast.error("Select or type who this was paid to");
       return;
     }
+    savingRef.current = true;
     setSaving(true);
 
     // Bank-balance changes, a possibly-new payee, and the expense record
@@ -310,15 +395,13 @@ function ExpenseDialog({
               onKeyDown={(ev) => {
                 if (ev.key === "ArrowDown") {
                   ev.preventDefault();
-                  setPayeeNavigated(true);
                   setPayeeIdx((i) => Math.min(payeeSuggests.length - 1, i + 1));
                 } else if (ev.key === "ArrowUp") {
                   ev.preventDefault();
-                  setPayeeNavigated(true);
                   setPayeeIdx((i) => Math.max(0, i - 1));
                 } else if (ev.key === "Enter") {
                   ev.preventDefault();
-                  if (payeeSuggests[payeeIdx] && (payeeQ.trim() || payeeNavigated)) {
+                  if (payeeSuggests[payeeIdx]) {
                     selectPayee(payeeSuggests[payeeIdx]);
                   }
                 }
@@ -365,7 +448,6 @@ function ExpenseDialog({
               <ModePills
                 value={f.paymentMode ?? "cash"}
                 onChange={(m) => {
-                  if (m !== "bank") setBankNavigated(false);
                   setF({ ...f, paymentMode: m, bankId: m === "bank" ? f.bankId : undefined });
                 }}
                 modes={["cash", "bank"]}
@@ -388,15 +470,13 @@ function ExpenseDialog({
                 onKeyDown={(e) => {
                   if (e.key === "ArrowDown") {
                     e.preventDefault();
-                    setBankNavigated(true);
                     setBankIdx((i) => Math.min(bankSuggests.length - 1, i + 1));
                   } else if (e.key === "ArrowUp") {
                     e.preventDefault();
-                    setBankNavigated(true);
                     setBankIdx((i) => Math.max(0, i - 1));
                   } else if (e.key === "Enter") {
                     e.preventDefault();
-                    if (bankSuggests[bankIdx] && (bankQ.trim() || bankNavigated)) {
+                    if (bankSuggests[bankIdx]) {
                       selectBank(bankSuggests[bankIdx]);
                     }
                   }
@@ -433,14 +513,14 @@ function ExpenseDialog({
               )}
             </div>
           )}
-          <div className="col-span-2">
+          <div className="sm:col-span-2">
             <Field
               label="Notes"
               value={f.notes ?? ""}
               onChange={(e) => setF({ ...f, notes: e.target.value })}
             />
           </div>
-          <div className="col-span-2 flex justify-end gap-2 mt-2">
+          <div className="sm:col-span-2 flex justify-end gap-2 mt-2">
             <Button
               type="button"
               variant="outline"

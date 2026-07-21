@@ -9,8 +9,9 @@ import {
   PurchaseReturnRepo,
   BankRepo,
 } from "@/repositories";
+import { useRepoData } from "@/hooks/useRepoData";
 import { newBatch, commitBatch } from "@/repositories/base";
-import type { Payment, PaymentAllocation, PaymentMode, Invoice, BankAccount } from "@/types";
+import type { Payment, PaymentAllocation, PaymentMode, Invoice, BankAccount, Party } from "@/types";
 import { fmtMoney, fmtDate, today } from "@/lib/format";
 import { partyBalances } from "@/lib/ledger";
 import {
@@ -25,12 +26,16 @@ import {
   ChevronRight,
   Loader2,
   Pencil,
+  SlidersHorizontal,
 } from "lucide-react";
+import { usePermissions } from "@/hooks/usePermissions";
 import { toast } from "sonner";
 import { genId } from "@/repositories/base";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { DataTable, type Column } from "@/components/DataTable";
+import { usePagination } from "@/components/Pagination";
+import { NumInput } from "@/components/NumInput";
 import { ModePills, fmtMode } from "@/components/ModePills";
 import { PageHeader } from "@/components/PageHeader";
 
@@ -39,16 +44,56 @@ export const Route = createFileRoute("/payments")({ component: PaymentsPage });
 type Tab = "all" | "in" | "out";
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
+/** Reverse a legacy payment's invoice application. Legacy payments (from
+ * before per-invoice `allocations` existed) stored only a lump `amount` and a
+ * comma-separated list of invoice numbers in `ref`, with no record of the
+ * per-invoice split. Distribute the reversal proportionally to each invoice's
+ * CURRENT paid amount — the closest fair approximation, and (unlike a fixed
+ * per-invoice amount in list order) it never leaves a remainder silently
+ * undone when an invoice's paid has since dropped. Shared by BOTH delete and
+ * edit so the two paths can never diverge — the edit path previously had no
+ * legacy reversal at all, which double-counted the money on save. */
+function reverseLegacyRefApplication(
+  batch: ReturnType<typeof newBatch>,
+  repo: typeof SalesRepo,
+  ref: string,
+  amount: number,
+) {
+  const tokens = ref
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+  const all = repo.all();
+  const invoices = tokens
+    .map((t) => all.find((i) => i.number === t))
+    .filter((i): i is Invoice => !!i && i.paid > 0);
+  const totalPaid = invoices.reduce((s, inv) => s + inv.paid, 0);
+  const totalReverse = Math.min(amount, totalPaid);
+  if (totalReverse <= 0) return;
+  for (const inv of invoices) {
+    const take = Math.min(inv.paid, r2((inv.paid / totalPaid) * totalReverse));
+    // Atomic decrement (not an absolute write): in the EDIT path the same
+    // invoice may also be freshly re-applied below, and two increments on one
+    // doc compose correctly where an absolute set + an increment would race.
+    if (take > 0) repo.adjustFieldBatched(batch, inv.id, "paid", -take);
+  }
+}
+
 function PaymentsPage() {
+  const { isOwner, canEdit, canDelete } = usePermissions();
+  const editAllowed = isOwner || canEdit("cashBank");
+  const deleteAllowed = isOwner || canDelete("cashBank");
   const [rows, setRows] = useState<Payment[]>([]);
   const [tab, setTab] = useState<Tab>("all");
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
   const [formType, setFormType] = useState<"in" | "out">("in");
   const [editing, setEditing] = useState<Payment | null>(null);
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
 
   const refresh = () => setRows(PaymentRepo.all().sort((a, b) => b.date.localeCompare(a.date)));
-  useEffect(refresh, []);
+  const _repoV = useRepoData();
+  useEffect(refresh, [_repoV]);
 
   const filtered = rows.filter((r) => {
     if (tab !== "all" && r.type !== tab) return false;
@@ -60,8 +105,11 @@ function PaymentsPage() {
     return true;
   });
 
-  const totalIn = rows.filter((r) => r.type === "in").reduce((s, r) => s + r.amount, 0);
-  const totalOut = rows.filter((r) => r.type === "out").reduce((s, r) => s + r.amount, 0);
+  const pg = usePagination(filtered);
+
+  // Footer totals cover the same rows the table shows (tab + search applied)
+  const totalIn = filtered.filter((r) => r.type === "in").reduce((s, r) => s + r.amount, 0);
+  const totalOut = filtered.filter((r) => r.type === "out").reduce((s, r) => s + r.amount, 0);
   const net = totalIn - totalOut;
 
   const openForm = (type: "in" | "out") => {
@@ -75,49 +123,44 @@ function PaymentsPage() {
     setOpen(true);
   };
   const handleDelete = (r: Payment) => {
+    if (!deleteAllowed) {
+      toast.error("You don't have permission to delete payments");
+      return;
+    }
     if (!confirm("Delete this payment record? Amounts applied to invoices/bills will be reversed."))
       return;
-    const repo = r.type === "in" ? SalesRepo : PurchaseRepo;
+    // Bail if another device already deleted this payment — the invoice-paid
+    // and bank reversals below are blind atomic decrements, so running them a
+    // second time would reverse the money twice. Reverse from the LIVE record.
+    const live = PaymentRepo.get(r.id);
+    if (!live) {
+      toast.info("This payment was already deleted");
+      refresh();
+      return;
+    }
+    const repo = live.type === "in" ? SalesRepo : PurchaseRepo;
     // Invoice-paid reversal, bank-balance reversal, and the payment removal
     // itself must all land together — a shared batch commits them atomically.
     const batch = newBatch();
-    if (r.allocations?.length) {
-      for (const a of r.allocations) {
+    if (live.allocations?.length) {
+      for (const a of live.allocations) {
         if (repo.get(a.invoiceId)) repo.adjustFieldBatched(batch, a.invoiceId, "paid", -a.amount);
       }
-    } else if (r.ref) {
-      // Legacy payment (predates per-invoice allocations): only a lump amount
-      // and a comma-separated list of invoice numbers was stored, with no
-      // record of how much actually went to each one. There's no way to
-      // recover the true original split, so distribute the reversal
-      // proportionally to each invoice's CURRENT paid amount — this is the
-      // closest fair approximation and, unlike taking a fixed amount per
-      // invoice in list order, never leaves a leftover silently undone when
-      // an earlier invoice's paid has since dropped below its original share.
-      const tokens = r.ref
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean);
-      const all = repo.all();
-      const invoices = tokens
-        .map((t) => all.find((i) => i.number === t))
-        .filter((i): i is Invoice => !!i && i.paid > 0);
-      const totalPaid = invoices.reduce((s, inv) => s + inv.paid, 0);
-      const totalReverse = Math.min(r.amount, totalPaid);
-      if (totalReverse > 0) {
-        for (const inv of invoices) {
-          const take = Math.min(inv.paid, r2((inv.paid / totalPaid) * totalReverse));
-          if (take > 0) repo.updateBatched(batch, inv.id, { paid: r2(inv.paid - take) });
-        }
-      }
+    } else if (live.ref) {
+      reverseLegacyRefApplication(batch, repo, live.ref, live.amount);
     }
     // Money that was moved onto a specific bank account when this payment
     // was recorded must be moved back off it, or the account balance stays
     // permanently wrong after the payment is deleted.
-    if (r.mode === "bank" && r.bankId && BankRepo.get(r.bankId)) {
-      BankRepo.adjustFieldBatched(batch, r.bankId, "balance", r.type === "in" ? -r.amount : r.amount);
+    if (live.mode === "bank" && live.bankId && BankRepo.get(live.bankId)) {
+      BankRepo.adjustFieldBatched(
+        batch,
+        live.bankId,
+        "balance",
+        live.type === "in" ? -live.amount : live.amount,
+      );
     }
-    PaymentRepo.removeBatched(batch, r.id);
+    PaymentRepo.removeBatched(batch, live.id);
     commitBatch(batch, "delete payment");
     refresh();
     toast.success("Payment deleted");
@@ -194,26 +237,30 @@ function PaymentsPage() {
       align: "center",
       render: (r) => (
         <span className="inline-flex gap-1">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              openEdit(r);
-            }}
-            className="p-1 rounded hover:bg-blue-50 text-gray-400 hover:text-blue-600 transition"
-            title="Edit payment"
-          >
-            <Pencil className="h-3.5 w-3.5" />
-          </button>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              handleDelete(r);
-            }}
-            className="p-1 rounded hover:bg-rose-50 text-gray-400 hover:text-rose-500 transition"
-            title="Delete payment"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
+          {editAllowed && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                openEdit(r);
+              }}
+              className="p-1 rounded hover:bg-blue-50 text-gray-400 hover:text-blue-600 transition"
+              title="Edit payment"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {deleteAllowed && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleDelete(r);
+              }}
+              className="p-1 rounded hover:bg-rose-50 text-gray-400 hover:text-rose-500 transition"
+              title="Delete payment"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          )}
         </span>
       ),
     },
@@ -225,10 +272,23 @@ function PaymentsPage() {
         title="Payments"
         subtitle={`${rows.length} records`}
         icon={<Wallet className="h-5 w-5" />}
+        mobileAction={
+          <button
+            onClick={() => setMobileFiltersOpen(true)}
+            className="relative h-9 w-9 flex items-center justify-center rounded-lg border border-gray-200 bg-gray-50/60 text-gray-600"
+            title="Filters"
+          >
+            <SlidersHorizontal className="h-4 w-4" />
+            {tab !== "all" && (
+              <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-primary" />
+            )}
+          </button>
+        }
         actions={
           <>
-            {/* Tabs */}
-            <div className="flex items-center gap-0.5 h-9 border border-gray-200 rounded-lg p-0.5 bg-gray-50/60">
+            {/* Tabs — its own filter sheet on mobile (see Filters button
+                above); this inline row is desktop only. */}
+            <div className="hidden sm:flex items-center gap-0.5 h-9 border border-gray-200 rounded-lg p-0.5 bg-gray-50/60">
               {(["all", "in", "out"] as Tab[]).map((t) => (
                 <button
                   key={t}
@@ -248,34 +308,173 @@ function PaymentsPage() {
               ))}
             </div>
 
-            {/* Search */}
-            <div className="relative w-48">
+            {/* Search — kept inline on every screen size */}
+            <div className="relative w-full sm:w-48">
               <Search className="h-3.5 w-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search party, reference…"
-                className="w-full h-9 pl-9 pr-3 rounded-lg border border-gray-200 bg-gray-50/60 text-[13px] focus:outline-none focus:ring-2 focus:ring-primary/20 focus:bg-white transition"
+                className="w-full h-9 pl-9 pr-3 rounded-lg border border-gray-200 bg-gray-50/60 text-base md:text-[13px] focus:outline-none focus:ring-2 focus:ring-primary/20 focus:bg-white transition"
               />
             </div>
 
-            <button
-              onClick={() => openForm("in")}
-              className="inline-flex items-center gap-1.5 h-9 px-3 bg-emerald-600 text-white rounded-lg text-sm font-semibold hover:bg-emerald-700 transition"
-            >
-              <ArrowDownCircle className="h-4 w-4" /> Receive Payment
-            </button>
-            <button
-              onClick={() => openForm("out")}
-              className="inline-flex items-center gap-1.5 h-9 px-3 bg-rose-600 text-white rounded-lg text-sm font-semibold hover:bg-rose-700 transition"
-            >
-              <ArrowUpCircle className="h-4 w-4" /> Make Payment
-            </button>
+            {editAllowed && (
+              <button
+                onClick={() => openForm("in")}
+                className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 h-9 px-3 bg-emerald-600 text-white rounded-lg text-sm font-semibold hover:bg-emerald-700 transition"
+              >
+                <ArrowDownCircle className="h-4 w-4" /> Receive Payment
+              </button>
+            )}
+            {editAllowed && (
+              <button
+                onClick={() => openForm("out")}
+                className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 h-9 px-3 bg-rose-600 text-white rounded-lg text-sm font-semibold hover:bg-rose-700 transition"
+              >
+                <ArrowUpCircle className="h-4 w-4" /> Make Payment
+              </button>
+            )}
           </>
         }
       />
 
-      <div className="p-6 flex-1 min-h-0 flex">
+      {/* Mobile filter sheet — the In/Out tabs don't fit inline next to
+          Search on a phone, so they live here behind the header's Filters
+          button instead, same state as the desktop inline tabs. */}
+      <Dialog open={mobileFiltersOpen} onOpenChange={setMobileFiltersOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Filters</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <label className="text-xs font-semibold text-gray-500 block mb-1.5">Type</label>
+              <div className="flex items-center gap-1 border border-gray-200 rounded-lg p-1 bg-gray-50/60">
+                {(["all", "in", "out"] as Tab[]).map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setTab(t)}
+                    className={`flex-1 h-8 rounded-md text-xs font-semibold transition ${
+                      tab === t
+                        ? t === "in"
+                          ? "bg-emerald-50 text-emerald-700"
+                          : t === "out"
+                            ? "bg-rose-50 text-rose-700"
+                            : "bg-primary text-primary-foreground"
+                        : "text-gray-500 hover:bg-gray-100"
+                    }`}
+                  >
+                    {t === "all" ? "All" : t === "in" ? "Received" : "Paid Out"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center justify-end pt-1">
+              <button
+                onClick={() => setMobileFiltersOpen(false)}
+                className="h-8 px-4 bg-primary text-primary-foreground rounded-md text-sm font-semibold hover:opacity-90 transition"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Mobile card list — a table of 8 columns doesn't fit a phone; this
+          is the same data as one tappable card per payment instead. */}
+      <div className="md:hidden flex-1 overflow-auto">
+        {filtered.length === 0 ? (
+          <div className="text-center py-16 text-gray-400">
+            <Wallet className="h-10 w-10 mx-auto mb-3 text-gray-200" />
+            <p className="font-medium">No payments found</p>
+            <p className="text-xs mt-1">Try adjusting filters or use the buttons above to record one</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-100">
+            {pg.paged.map((r) => {
+              const isIn = r.type === "in";
+              const refText = r.allocations?.length
+                ? r.allocations.map((a) => a.number).join(", ")
+                : r.ref && r.ref.match(/^(INV|PUR)-/)
+                  ? r.ref
+                  : "";
+              return (
+                <div
+                  key={r.id}
+                  onClick={() => openEdit(r)}
+                  className="bg-white px-4 py-3 active:bg-gray-50 flex items-center gap-3"
+                >
+                  <div
+                    className={`h-9 w-9 rounded-full flex items-center justify-center shrink-0 ${isIn ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600"}`}
+                  >
+                    {isIn ? (
+                      <ArrowDownCircle className="h-4 w-4" />
+                    ) : (
+                      <ArrowUpCircle className="h-4 w-4" />
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-semibold text-[13px] text-gray-800 truncate leading-tight">
+                        {r.partyName}
+                      </p>
+                      <p
+                        className={`font-bold text-[13px] tabular-nums shrink-0 leading-tight ${isIn ? "text-emerald-600" : "text-rose-600"}`}
+                      >
+                        {isIn ? "+" : "−"}
+                        {fmtMoney(r.amount)}
+                      </p>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 mt-1">
+                      <p className="text-[11px] text-gray-400 truncate">
+                        {fmtDate(r.date)} · {isIn ? "Received" : "Paid Out"} · {fmtMode(r.mode)}
+                      </p>
+                      {refText && (
+                        <span className="font-mono text-[11px] text-gray-400 truncate shrink-0 max-w-[38%]">
+                          {refText}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {(editAllowed || deleteAllowed) && (
+                    <div className="flex flex-col gap-0.5 shrink-0 -mr-1.5">
+                      {editAllowed && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openEdit(r);
+                          }}
+                          className="p-1.5 rounded hover:bg-blue-50 text-gray-300 hover:text-blue-600 transition"
+                          title="Edit payment"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                      {deleteAllowed && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDelete(r);
+                          }}
+                          className="p-1.5 rounded hover:bg-rose-50 text-gray-300 hover:text-rose-500 transition"
+                          title="Delete payment"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Table (desktop) */}
+      <div className="hidden md:flex flex-1 min-h-0 p-6">
         <DataTable
           activateOnClick
           columns={columns}
@@ -343,7 +542,7 @@ function ReceivePaymentDialog({
   // party created by an earlier payment in this same session (e.g. a
   // walk-in customer typed by name) would never show up in the dedupe
   // lookup or the search suggestions, creating a duplicate Party record.
-  const [allParties, setAllParties] = useState<{ id: string; name: string }[]>([]);
+  const [allParties, setAllParties] = useState<Party[]>([]);
 
   const [partyQ, setPartyQ] = useState("");
   const [partyOpen, setPartyOpen] = useState(false);
@@ -357,19 +556,17 @@ function ReceivePaymentDialog({
   const [bankQ, setBankQ] = useState("");
   const [bankOpen, setBankOpen] = useState(false);
   const [bankIdx, setBankIdx] = useState(0);
-  // Enter should only commit a bank pick once the user has typed or
-  // arrow-navigated — a reflex Enter right after the dropdown opens on
-  // focus (showing every bank account) shouldn't silently pick whichever
-  // one happens to be first.
-  const [bankNavigated, setBankNavigated] = useState(false);
   const [applyRows, setApplyRows] = useState<ApplyRow[]>([]);
-  const [manualAmount, setManualAmount] = useState("");
+  const [manualAmount, setManualAmount] = useState(0);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
 
+  // Archived parties are hidden from the picker; the full `allParties` list is
+  // still used for save-time dedup (which auto-restores an archived match).
+  const activeParties = allParties.filter((p) => !p.archived);
   const suggests = partyQ.trim()
-    ? allParties.filter((p) => p.name.toLowerCase().includes(partyQ.toLowerCase())).slice(0, 6)
-    : [];
+    ? activeParties.filter((p) => p.name.toLowerCase().includes(partyQ.toLowerCase())).slice(0, 6)
+    : activeParties.slice(0, 6);
 
   const bankSuggests = bankQ.trim()
     ? banks.filter(
@@ -396,7 +593,7 @@ function ReceivePaymentDialog({
         setMode(editing.mode);
         setBankId(editing.bankId ?? "");
         setBankQ(BankRepo.all().find((b) => b.id === editing.bankId)?.name ?? "");
-        setManualAmount(editing.allocations?.length ? "" : String(editing.amount));
+        setManualAmount(editing.allocations?.length ? 0 : editing.amount);
       } else {
         setPartyQ("");
         setSelectedParty(null);
@@ -404,7 +601,7 @@ function ReceivePaymentDialog({
         setMode("cash");
         setBankId("");
         setBankQ("");
-        setManualAmount("");
+        setManualAmount(0);
         setTimeout(() => partyRef.current?.focus(), 60);
       }
       setApplyRows([]);
@@ -478,7 +675,7 @@ function ReceivePaymentDialog({
   // invoices would populate an all-unchecked list, drive this to 0, hide the
   // manual amount field (it was only shown when applyRows.length===0), and
   // permanently block saving.
-  const effectiveAmount = totalApplied > 0 ? totalApplied : parseFloat(manualAmount) || 0;
+  const effectiveAmount = totalApplied > 0 ? totalApplied : manualAmount;
 
   const toggleRow = (idx: number) => {
     setApplyRows((rows) =>
@@ -490,8 +687,7 @@ function ReceivePaymentDialog({
     );
   };
 
-  const setApply = (idx: number, val: string) => {
-    const num = parseFloat(val) || 0;
+  const setApply = (idx: number, num: number) => {
     setApplyRows((rows) =>
       rows.map((r, i) =>
         i === idx ? { ...r, apply: Math.min(r.due, Math.max(0, num)), checked: num > 0 } : r,
@@ -549,14 +745,28 @@ function ReceivePaymentDialog({
         if (!match)
           PartyRepo.addBatched(batch, { id: partyId, name: partyName, type: "both", openingBalance: 0 });
       }
+      // Recording a NEW payment against an archived party reactivates them —
+      // restore in the same batch (matches the sale/purchase form). Only for a
+      // new payment: editing an existing payment whose party is already
+      // archived must not silently un-archive it.
+      if (!editing && partyId && PartyRepo.get(partyId)?.archived) {
+        PartyRepo.updateBatched(batch, partyId, { archived: false });
+      }
 
       const repo = isIn ? SalesRepo : PurchaseRepo;
 
-      // Editing: first reverse this payment's previous applications (atomic)
+      // Editing: first reverse this payment's previous applications (atomic).
+      // Both the allocations model AND the legacy ref model must be handled —
+      // a legacy payment being edited previously reversed NOTHING here, so the
+      // new allocation was applied on top of the old lump, overstating each
+      // invoice's paid. The legacy branch below fixes that; `ref: undefined`
+      // in the update patch then migrates the record cleanly to allocations.
       if (editing?.allocations?.length) {
         for (const a of editing.allocations) {
           if (repo.get(a.invoiceId)) repo.adjustFieldBatched(batch, a.invoiceId, "paid", -a.amount);
         }
+      } else if (editing?.ref) {
+        reverseLegacyRefApplication(batch, repo, editing.ref, editing.amount);
       }
       // Editing: reverse the old bank-account effect too, before applying
       // the new one below — handles both "same account, new amount" and
@@ -613,6 +823,10 @@ function ReceivePaymentDialog({
           mode,
           bankId: mode === "bank" ? bankId : undefined,
           allocations: allocations.length ? allocations : undefined,
+          // Clear any legacy `ref` — its application was just reversed above,
+          // so leaving it would double-count on the NEXT edit/delete and show
+          // a stale linked-invoice list. The record is now allocations-based.
+          ref: undefined,
         });
       } else {
         const payment: Payment = {
@@ -654,7 +868,7 @@ function ReceivePaymentDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto overflow-x-hidden">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
             {isIn ? (
@@ -688,7 +902,7 @@ function ReceivePaymentDialog({
                   setSelectedParty(null);
                   setApplyRows([]);
                 }}
-                onFocus={() => partyQ && setPartyOpen(true)}
+                onFocus={() => setPartyOpen(true)}
                 onBlur={() => setTimeout(() => setPartyOpen(false), 150)}
                 onKeyDown={(e) => {
                   if (e.key === "ArrowDown") {
@@ -730,9 +944,9 @@ function ReceivePaymentDialog({
             <div
               className={`rounded-lg border-2 p-4 ${isIn ? "border-emerald-200 bg-emerald-50" : "border-rose-200 bg-rose-50"}`}
             >
-              <div className="flex items-center justify-between mb-3">
-                <div>
-                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide truncate">
                     {isIn ? "Outstanding Receivable from" : "Outstanding Payable to"}{" "}
                     {selectedParty.name}
                   </p>
@@ -743,16 +957,16 @@ function ReceivePaymentDialog({
                   </p>
                 </div>
                 {applyRows.length > 0 && (
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 shrink-0">
                     <button
                       onClick={applyAll}
-                      className="text-xs px-2 py-1 rounded bg-white border font-medium text-gray-700 hover:bg-gray-50"
+                      className="flex-1 sm:flex-none text-xs px-3 py-1.5 rounded-md bg-white border font-medium text-gray-700 hover:bg-gray-50 transition"
                     >
                       Apply All
                     </button>
                     <button
                       onClick={clearAll}
-                      className="text-xs px-2 py-1 rounded bg-white border font-medium text-gray-700 hover:bg-gray-50"
+                      className="flex-1 sm:flex-none text-xs px-3 py-1.5 rounded-md bg-white border font-medium text-gray-700 hover:bg-gray-50 transition"
                     >
                       Clear
                     </button>
@@ -777,61 +991,60 @@ function ReceivePaymentDialog({
                     {applyRows.map((row, idx) => (
                       <div
                         key={row.invoice.id}
-                        className={`flex items-center gap-3 px-3 py-2.5 border-b border-gray-100 last:border-0 transition ${row.checked ? (isIn ? "bg-emerald-50/50" : "bg-rose-50/50") : ""}`}
+                        className={`flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 px-3 py-2.5 border-b border-gray-100 last:border-0 transition ${row.checked ? (isIn ? "bg-emerald-50/50" : "bg-rose-50/50") : ""}`}
                       >
-                        <button
-                          type="button"
-                          onClick={() => toggleRow(idx)}
-                          className="shrink-0 mt-0.5"
-                        >
-                          {row.checked ? (
-                            <CheckCircle2
-                              className={`h-5 w-5 ${isIn ? "text-emerald-600" : "text-rose-500"}`}
-                            />
-                          ) : (
-                            <Circle className="h-5 w-5 text-gray-300" />
-                          )}
-                        </button>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono font-semibold text-xs text-blue-600">
-                              {row.invoice.number}
-                            </span>
-                            <span className="text-xs text-gray-400">
-                              {fmtDate(row.invoice.date)}
-                            </span>
-                            {row.invoice.paid > 0 && (
-                              <span className="text-[10px] font-semibold text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">
-                                Partial
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-xs text-gray-500 mt-0.5">
-                            Total {fmtMoney(row.invoice.total)} · Already paid{" "}
-                            {fmtMoney(row.invoice.paid)}
-                          </div>
-                        </div>
-                        <div className="shrink-0 text-right">
-                          <p className="text-[10px] text-gray-400 mb-1">Due</p>
-                          <p
-                            className={`text-sm font-bold tabular-nums ${isIn ? "text-emerald-700" : "text-rose-700"}`}
+                        <div className="flex items-start gap-3 sm:flex-1 min-w-0">
+                          <button
+                            type="button"
+                            onClick={() => toggleRow(idx)}
+                            className="shrink-0 mt-0.5"
                           >
-                            {fmtMoney(row.due)}
-                          </p>
+                            {row.checked ? (
+                              <CheckCircle2
+                                className={`h-5 w-5 ${isIn ? "text-emerald-600" : "text-rose-500"}`}
+                              />
+                            ) : (
+                              <Circle className="h-5 w-5 text-gray-300" />
+                            )}
+                          </button>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-mono font-semibold text-xs text-blue-600">
+                                {row.invoice.number}
+                              </span>
+                              <span className="text-xs text-gray-400 whitespace-nowrap">
+                                {fmtDate(row.invoice.date)}
+                              </span>
+                              {row.invoice.paid > 0 && (
+                                <span className="text-[10px] font-semibold text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">
+                                  Partial
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-0.5">
+                              Total {fmtMoney(row.invoice.total)} · Already paid{" "}
+                              {fmtMoney(row.invoice.paid)}
+                            </div>
+                          </div>
                         </div>
-                        <div className="shrink-0 w-24">
-                          <p className="text-[10px] text-gray-400 mb-1 text-right">Apply (₹)</p>
-                          <input
-                            type="number"
-                            value={row.apply || ""}
-                            min={0}
-                            max={row.due}
-                            step="0.01"
-                            onWheel={(e) => e.currentTarget.blur()}
-                            onChange={(e) => setApply(idx, e.target.value)}
-                            placeholder="0.00"
-                            className={`w-full h-7 px-2 text-right text-xs border rounded outline-none focus:ring-1 ${row.checked ? (isIn ? "border-emerald-400 focus:ring-emerald-300 bg-white" : "border-rose-400 focus:ring-rose-300 bg-white") : "border-gray-200 bg-gray-50"} tabular-nums`}
-                          />
+                        <div className="flex items-center justify-between sm:justify-end gap-4 sm:shrink-0">
+                          <div className="text-left sm:text-right">
+                            <p className="text-[10px] text-gray-400 mb-1">Due</p>
+                            <p
+                              className={`text-sm font-bold tabular-nums ${isIn ? "text-emerald-700" : "text-rose-700"}`}
+                            >
+                              {fmtMoney(row.due)}
+                            </p>
+                          </div>
+                          <div className="shrink-0 w-24">
+                            <p className="text-[10px] text-gray-400 mb-1 text-right">Apply (₹)</p>
+                            <NumInput
+                              value={row.apply}
+                              onValue={(n) => setApply(idx, n)}
+                              placeholder="0.00"
+                              className={`w-full h-7 px-2 text-right text-xs border rounded outline-none focus:ring-1 ${row.checked ? (isIn ? "border-emerald-400 focus:ring-emerald-300 bg-white" : "border-rose-400 focus:ring-rose-300 bg-white") : "border-gray-200 bg-gray-50"} tabular-nums`}
+                            />
+                          </div>
                         </div>
                       </div>
                     ))}
@@ -846,13 +1059,9 @@ function ReceivePaymentDialog({
                   <label className="text-[12px] font-semibold text-gray-600 block mb-1">
                     {applyRows.length > 0 ? "Or record as advance (₹)" : "Amount (₹) *"}
                   </label>
-                  <input
-                    type="number"
+                  <NumInput
                     value={manualAmount}
-                    min={0}
-                    step="0.01"
-                    onWheel={(e) => e.currentTarget.blur()}
-                    onChange={(e) => setManualAmount(e.target.value)}
+                    onValue={setManualAmount}
                     className={`w-full h-9 px-3 border-2 rounded-md text-right font-bold text-lg outline-none focus:border-primary ${isIn ? "text-emerald-700" : "text-rose-700"}`}
                     placeholder="0.00"
                   />
@@ -867,13 +1076,9 @@ function ReceivePaymentDialog({
               <label className="text-[12px] font-semibold text-gray-600 block mb-1">
                 Amount (₹) *
               </label>
-              <input
-                type="number"
+              <NumInput
                 value={manualAmount}
-                min={0}
-                step="0.01"
-                onWheel={(e) => e.currentTarget.blur()}
-                onChange={(e) => setManualAmount(e.target.value)}
+                onValue={setManualAmount}
                 className={`w-full h-9 px-3 border-2 rounded-md text-right font-bold text-lg outline-none focus:border-primary ${isIn ? "text-emerald-700" : "text-rose-700"}`}
                 placeholder="0.00"
               />
@@ -901,7 +1106,6 @@ function ReceivePaymentDialog({
                     if (m !== "bank") {
                       setBankId("");
                       setBankQ("");
-                      setBankNavigated(false);
                     }
                   }}
                   modes={["cash", "bank"]}
@@ -926,15 +1130,13 @@ function ReceivePaymentDialog({
                 onKeyDown={(e) => {
                   if (e.key === "ArrowDown") {
                     e.preventDefault();
-                    setBankNavigated(true);
                     setBankIdx((i) => Math.min(bankSuggests.length - 1, i + 1));
                   } else if (e.key === "ArrowUp") {
                     e.preventDefault();
-                    setBankNavigated(true);
                     setBankIdx((i) => Math.max(0, i - 1));
                   } else if (e.key === "Enter") {
                     e.preventDefault();
-                    if (bankSuggests[bankIdx] && (bankQ.trim() || bankNavigated)) {
+                    if (bankSuggests[bankIdx]) {
                       selectBank(bankSuggests[bankIdx]);
                     }
                   }
@@ -974,7 +1176,7 @@ function ReceivePaymentDialog({
 
           {/* Total + Actions */}
           <div
-            className={`rounded-lg border-2 p-4 flex items-center justify-between ${isIn ? "border-emerald-200 bg-emerald-50" : "border-rose-200 bg-rose-50"}`}
+            className={`rounded-lg border-2 p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 ${isIn ? "border-emerald-200 bg-emerald-50" : "border-rose-200 bg-rose-50"}`}
           >
             <div>
               <p className="text-xs text-gray-500 font-medium">
@@ -989,17 +1191,22 @@ function ReceivePaymentDialog({
               </p>
             </div>
             <div className="flex gap-2">
-              <Button variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>
+              <Button
+                variant="outline"
+                disabled={saving}
+                onClick={() => onOpenChange(false)}
+                className="flex-1 sm:flex-none"
+              >
                 Cancel
               </Button>
               <Button
                 onClick={save}
                 disabled={saving}
-                className={
+                className={`flex-1 sm:flex-none ${
                   isIn
                     ? "bg-emerald-600 hover:bg-emerald-700 text-white"
                     : "bg-rose-600 hover:bg-rose-700 text-white"
-                }
+                }`}
               >
                 {saving ? (
                   <>

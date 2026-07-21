@@ -1,7 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable, type Column } from "@/components/DataTable";
+import { usePagination } from "@/components/Pagination";
+import { useAutoFocusOnDesktop } from "@/hooks/use-mobile";
 import {
   ItemRepo,
   SalesRepo,
@@ -10,13 +12,17 @@ import {
   PurchaseReturnRepo,
   StockAdjustmentRepo,
 } from "@/repositories";
+import { useRepoData } from "@/hooks/useRepoData";
 import type { Item } from "@/types";
 import { fmtMoney } from "@/lib/format";
-import { Boxes, Search } from "lucide-react";
+import { Boxes, Package, Search } from "lucide-react";
 
 export const Route = createFileRoute("/inventory")({ component: InventoryPage });
 
 function InventoryPage() {
+  const _repoV = useRepoData();
+  const searchRef = useRef<HTMLInputElement>(null);
+  useAutoFocusOnDesktop(searchRef);
   const [rows, setRows] = useState<Item[]>([]);
   const [q, setQ] = useState("");
   const refresh = () => setRows(ItemRepo.all());
@@ -29,7 +35,7 @@ function InventoryPage() {
     // indefinitely.
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
-  }, []);
+  }, [_repoV]);
 
   // Stock In = purchases + sale returns + manual additions
   // Stock Out = sales + purchase returns + manual reductions
@@ -117,15 +123,18 @@ function InventoryPage() {
     },
   ];
 
-  const totalValue = rows.reduce((s, r) => s + r.stock * r.purchasePrice, 0);
-  const lowCount = rows.filter(
-    (r) => (r.minStock != null && r.stock <= r.minStock) || r.stock < 0,
-  ).length;
-
   const filtered = rows.filter((r) => {
     const s = q.toLowerCase();
     return !s || r.name.toLowerCase().includes(s) || r.sku?.toLowerCase().includes(s);
   });
+
+  // Footer totals cover the filtered rows the table actually shows
+  const totalValue = filtered.reduce((s, r) => s + r.stock * r.purchasePrice, 0);
+  const lowCount = filtered.filter(
+    (r) => (r.minStock != null && r.stock <= r.minStock) || r.stock < 0,
+  ).length;
+
+  const pg = usePagination(filtered);
 
   return (
     <div className="flex flex-col h-full">
@@ -134,19 +143,67 @@ function InventoryPage() {
         subtitle={`${rows.length} items`}
         icon={<Boxes className="h-5 w-5" />}
         actions={
-          <div className="relative w-44 lg:w-56">
+          <div className="relative w-full sm:w-44 lg:w-56">
             <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
             <input
-              autoFocus
+              ref={searchRef}
               placeholder="Search items by name or SKU..."
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              className="w-full h-8 pl-8 pr-3 border border-gray-200 rounded-md text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
+              className="w-full h-8 pl-8 pr-3 border border-gray-200 rounded-md text-base md:text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
             />
           </div>
         }
       />
-      <div className="p-6 flex-1 min-h-0 flex">
+      {/* Mobile card list — a table of 8 columns doesn't fit a phone; this is
+          the same read-only stock data as one row-card per item instead (no
+          click action here either, same as the desktop table). */}
+      <div className="md:hidden flex-1 overflow-auto">
+        {filtered.length === 0 ? (
+          <div className="text-center py-16 text-gray-400">
+            <Package className="h-10 w-10 mx-auto mb-3 text-gray-200" />
+            <p className="font-medium">No items found</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-100">
+            {pg.paged.map((r) => {
+              // minStock=0 is a valid "alert exactly at zero" threshold (must not
+              // be treated as unset), and negative/oversold stock should always
+              // stand out even when no threshold is configured at all — same
+              // rule the desktop "Current" column uses.
+              const low = (r.minStock != null && r.stock <= r.minStock) || r.stock < 0;
+              return (
+                <div key={r.id} className="bg-white p-4">
+                  <div className="flex items-start justify-between gap-3 mb-1.5">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-gray-800 truncate">{r.name}</p>
+                      <p className="text-xs text-gray-400 mt-0.5 truncate font-mono">
+                        {r.sku || "No SKU"}
+                      </p>
+                    </div>
+                    <p
+                      className={`font-bold tabular-nums shrink-0 ${low ? "text-warning" : "text-gray-800"}`}
+                    >
+                      {r.stock} {r.unit}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3 text-xs text-gray-500">
+                    <span>+{purchaseQty.get(r.id) ?? 0} in</span>
+                    <span>-{salesQty.get(r.id) ?? 0} out</span>
+                    <span>Min {r.minStock ?? "—"}</span>
+                    <span className="ml-auto tabular-nums">
+                      {fmtMoney(r.stock * r.purchasePrice)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Table (desktop) */}
+      <div className="hidden md:flex flex-1 min-h-0 p-6">
         <DataTable
           columns={columns}
           rows={filtered}

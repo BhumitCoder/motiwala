@@ -2,12 +2,14 @@ import { Search, Plus, Building2, ChevronDown, Menu, LogOut } from "lucide-react
 import { useWorkspace } from "@/store/workspace";
 import { useNavigate } from "@tanstack/react-router";
 import { CompanyRepo, stopRepos } from "@/repositories";
+import { useRepoData } from "@/hooks/useRepoData";
 import { useEffect, useState } from "react";
 import { signOut } from "firebase/auth";
 import { auth, isBrowser } from "@/lib/firebase";
 import { toast } from "sonner";
 
 export function Topbar() {
+  useRepoData();
   const { setGlobalSearch, toggleMobileNav } = useWorkspace();
   const navigate = useNavigate();
   const [company, setCompany] = useState(() => CompanyRepo.get());
@@ -23,7 +25,16 @@ export function Topbar() {
   });
 
   return (
-    <header className="h-14 bg-card text-foreground shrink-0 border-b border-border grid grid-cols-[auto_1fr_auto] md:flex items-center px-3 md:px-4 gap-2 md:gap-3">
+    // Installed on the home screen (standalone mode), iOS draws the status
+    // bar translucent right over the page instead of pushing it down — so
+    // without this top padding for the notch/status-bar's safe area, the
+    // header (menu button included) renders partly underneath it: only the
+    // bottom sliver peeks out below the status bar, out of reach of taps.
+    <div
+      className="bg-card border-b border-border shrink-0"
+      style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}
+    >
+    <header className="h-14 text-foreground grid grid-cols-[auto_1fr_auto] md:flex items-center px-3 md:px-4 gap-2 md:gap-3">
       <button
         onClick={toggleMobileNav}
         className="md:hidden h-8 w-8 rounded-md hover:bg-accent flex items-center justify-center text-muted-foreground"
@@ -54,7 +65,9 @@ export function Topbar() {
       <div className="hidden md:block flex-1" />
 
       {/* Mobile — compact search icon (opens the same global search
-          overlay) + Sale button, grouped on the right of the single row. */}
+          overlay), on the right of the single row. The bottom nav's FAB is
+          now the one and only "Add Sale" entry point on mobile, so a second
+          Sale button up here was redundant clutter. */}
       <div className="md:hidden flex items-center gap-1.5 justify-self-end">
         <button
           onClick={() => setGlobalSearch(true)}
@@ -62,13 +75,6 @@ export function Topbar() {
           title="Search"
         >
           <Search className="h-4 w-4" />
-        </button>
-        <button
-          onClick={() => navigate({ to: "/sales/new" })}
-          className="shrink-0 h-9 px-3.5 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 font-bold text-sm flex items-center gap-1.5 shadow-sm transition"
-        >
-          <Plus className="h-4 w-4" />
-          Sale
         </button>
       </div>
 
@@ -132,5 +138,6 @@ export function Topbar() {
         <LogOut className="h-4 w-4" />
       </button>
     </header>
+    </div>
   );
 }

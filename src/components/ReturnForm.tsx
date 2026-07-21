@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { Field } from "@/components/Field";
@@ -20,6 +21,7 @@ import { genId, newBatch, commitBatch } from "@/repositories/base";
 import { stockShortfalls } from "@/lib/stock";
 import { NumInput } from "@/components/NumInput";
 import { QuickAddPartyDialog, type QuickAddPartyDetails } from "@/components/QuickAddPartyDialog";
+import { useRepoData } from "@/hooks/useRepoData";
 
 interface Props {
   mode: "sale-return" | "purchase-return";
@@ -28,6 +30,7 @@ interface Props {
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
 export function ReturnForm({ mode }: Props) {
+  useRepoData();
   const navigate = useNavigate();
   const company = CompanyRepo.get();
   const isSaleReturn = mode === "sale-return";
@@ -58,14 +61,22 @@ export function ReturnForm({ mode }: Props) {
   const gstOn = ret.gstEnabled !== false;
   const [allParties] = useState(() => PartyRepo.all());
   const items = useMemo(() => ItemRepo.all(), []);
+  // After an item is picked, focus goes to THAT line's Qty field (id
+  // "qty-<lineId>") so the returned quantity can be typed immediately —
+  // matching Sales' invoice form — not back into the search box.
+  const focusQtyId = useRef<string | null>(null);
+  useEffect(() => {
+    if (focusQtyId.current) {
+      const el = document.getElementById(`qty-${focusQtyId.current}`) as HTMLInputElement | null;
+      el?.focus();
+      el?.select();
+      focusQtyId.current = null;
+    }
+  }, [ret.lineItems]);
   const partyRef = useRef<HTMLInputElement>(null);
   const [partyQ, setPartyQ] = useState("");
   const [partyOpen, setPartyOpen] = useState(false);
   const [partyIdx, setPartyIdx] = useState(0);
-  // Enter should only commit a party pick once the user has typed or
-  // arrow-navigated — a reflex Enter right after the dropdown opens on
-  // focus (now showing the full list) shouldn't silently pick one.
-  const [partyNavigated, setPartyNavigated] = useState(false);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   // A party typed at the counter that doesn't exist yet is no longer
@@ -81,12 +92,20 @@ export function ReturnForm({ mode }: Props) {
 
   const invSuggests = useMemo(() => {
     const q = invQ.trim().toLowerCase();
-    if (!q) return [];
-    return invoiceRepo
-      .all()
+    // Once a customer/supplier is picked, a return can only ever be against
+    // one of THEIR bills — scope the search to just their invoices instead
+    // of browsing every party's, same as the party field itself narrows
+    // things down first.
+    const pool = ret.partyId
+      ? invoiceRepo.all().filter((i) => i.partyId === ret.partyId)
+      : invoiceRepo.all();
+    // Empty query — browse the most recent bills (already newest-first),
+    // like every other search-as-you-type field in this app.
+    if (!q) return pool.slice(0, 8);
+    return pool
       .filter((i) => i.number.toLowerCase().includes(q) || i.partyName.toLowerCase().includes(q))
       .slice(0, 8);
-  }, [invQ, invoiceRepo]);
+  }, [invQ, invoiceRepo, ret.partyId]);
 
   const loadFromInvoice = (inv: Invoice) => {
     const lines = inv.lineItems.map((l) => ({ ...l, id: genId() }));
@@ -110,11 +129,15 @@ export function ReturnForm({ mode }: Props) {
   };
 
   const partySuggests = useMemo(() => {
+    // Archived parties are hidden from the picker; `allParties` stays full for
+    // save-time dedup, which auto-restores an archived match instead of
+    // creating a duplicate.
+    const active = allParties.filter((p) => !p.archived);
     const q = partyQ.trim().toLowerCase();
     // Empty query — browse the full party list (like a combobox), instead
     // of showing nothing until the user starts typing.
-    if (!q) return allParties.slice(0, 8);
-    return allParties.filter((p) => p.name.toLowerCase().includes(q)).slice(0, 8);
+    if (!q) return active.slice(0, 8);
+    return active.filter((p) => p.name.toLowerCase().includes(q)).slice(0, 8);
   }, [partyQ, allParties]);
 
   useEffect(() => {
@@ -142,6 +165,8 @@ export function ReturnForm({ mode }: Props) {
     setRet({ ...ret, partyId: p.id, partyName: p.name, partyPhone: p.phone ?? "" });
     setPartyQ(p.name);
     setPartyOpen(false);
+    // Matches Sales' invoice form — party picked, land on Date next.
+    setTimeout(() => document.getElementById("ret-date")?.focus(), 30);
   };
 
   const addLineItem = (it: Item) => {
@@ -150,6 +175,7 @@ export function ReturnForm({ mode }: Props) {
     if (existingLine) {
       updateLine(existingLine.id, { qty: existingLine.qty + 1 });
       toast.info(`${it.name} — quantity increased to ${existingLine.qty + 1}`);
+      focusQtyId.current = existingLine.id;
       return;
     }
     const line: LineItem = {
@@ -168,6 +194,7 @@ export function ReturnForm({ mode }: Props) {
     line.amount = r2(r2(line.qty * line.price) * gstMult);
     const lines = [...ret.lineItems, line];
     setRet({ ...ret, lineItems: lines, ...recalc(lines) });
+    focusQtyId.current = line.id;
   };
 
   const updateLine = (id: string, patch: Partial<LineItem>) => {
@@ -222,6 +249,11 @@ export function ReturnForm({ mode }: Props) {
     } else {
       partyId = party.id;
       partyName = party.name;
+      // Reusing an archived party means they're active again — restore in the
+      // same batch (matches the sale/purchase form's behaviour).
+      if (PartyRepo.get(partyId)?.archived) {
+        PartyRepo.updateBatched(batch, partyId, { archived: false });
+      }
     }
 
     const finalRet: Return = { ...ret, partyId, partyName, createdAt: new Date().toISOString() };
@@ -267,42 +299,54 @@ export function ReturnForm({ mode }: Props) {
       }
     }
 
-    // When this return is linked to an original invoice, cap each item's
-    // return qty at what's actually left to return — otherwise the same
-    // invoice can be returned twice (or more than was ever sold/purchased),
-    // crediting stock and the party's balance more than once.
+    // When this return is LINKED to an original bill, cap each item's return
+    // qty at what's actually left to return on that bill (across all prior
+    // returns against it) — otherwise the same bill could be returned twice or
+    // beyond what it sold, crediting stock and the party's balance more than
+    // once. A typed bill number that matches nothing is rejected as a likely
+    // typo. A blank reference is a legitimate standalone credit/debit note
+    // (walk-in return, or goods whose original bill isn't in the system —
+    // common after migration); like Vyapar/Tally it isn't qty-capped, since
+    // there is no specific bill to cap against. (An earlier build capped these
+    // by the party's net transacted qty, but that both blocked legitimate
+    // cross-party/walk-in returns AND was bypassable by typing the party name
+    // instead of selecting it, so it was removed in favour of this per-bill rule.)
     const ref = (ret.originalRef ?? "").trim();
     if (ref) {
       const originalInvoice = invoiceRepo.all().find((i) => i.number.trim() === ref);
-      if (originalInvoice) {
-        const originalQty = new Map<string, number>();
-        for (const l of originalInvoice.lineItems) {
-          originalQty.set(l.itemId, (originalQty.get(l.itemId) ?? 0) + l.qty);
+      if (!originalInvoice) {
+        toast.error(
+          `No ${isSaleReturn ? "invoice" : "bill"} numbered "${ref}" found — check the number, or clear the field for a return without a linked bill.`,
+        );
+        return;
+      }
+      const originalQty = new Map<string, number>();
+      for (const l of originalInvoice.lineItems) {
+        originalQty.set(l.itemId, (originalQty.get(l.itemId) ?? 0) + l.qty);
+      }
+      const alreadyReturned = new Map<string, number>();
+      for (const r of repo.all()) {
+        if ((r.originalRef ?? "").trim() !== ref) continue;
+        for (const l of r.lineItems) {
+          alreadyReturned.set(l.itemId, (alreadyReturned.get(l.itemId) ?? 0) + l.qty);
         }
-        const alreadyReturned = new Map<string, number>();
-        for (const r of repo.all()) {
-          if ((r.originalRef ?? "").trim() !== ref) continue;
-          for (const l of r.lineItems) {
-            alreadyReturned.set(l.itemId, (alreadyReturned.get(l.itemId) ?? 0) + l.qty);
-          }
-        }
-        const thisReturnQty = new Map<string, number>();
-        for (const l of ret.lineItems) {
-          thisReturnQty.set(l.itemId, r2((thisReturnQty.get(l.itemId) ?? 0) + l.qty));
-        }
-        for (const l of ret.lineItems) {
-          const bought = originalQty.get(l.itemId) ?? 0;
-          const already = alreadyReturned.get(l.itemId) ?? 0;
-          const remaining = r2(bought - already);
-          const returningNow = thisReturnQty.get(l.itemId) ?? l.qty;
-          if (returningNow > remaining + 0.0001) {
-            toast.error(
-              remaining > 0
-                ? `"${l.name}" — only ${remaining} ${l.unit} left to return from ${ref} (already returned ${already})`
-                : `"${l.name}" has already been fully returned from ${ref}`,
-            );
-            return;
-          }
+      }
+      const thisReturnQty = new Map<string, number>();
+      for (const l of ret.lineItems) {
+        thisReturnQty.set(l.itemId, r2((thisReturnQty.get(l.itemId) ?? 0) + l.qty));
+      }
+      for (const l of ret.lineItems) {
+        const bought = originalQty.get(l.itemId) ?? 0;
+        const already = alreadyReturned.get(l.itemId) ?? 0;
+        const remaining = r2(bought - already);
+        const returningNow = thisReturnQty.get(l.itemId) ?? l.qty;
+        if (returningNow > remaining + 0.0001) {
+          toast.error(
+            remaining > 0
+              ? `"${l.name}" — only ${remaining} ${l.unit} left to return from ${ref} (already returned ${already})`
+              : `"${l.name}" has already been fully returned from ${ref}`,
+          );
+          return;
         }
       }
     }
@@ -364,46 +408,21 @@ export function ReturnForm({ mode }: Props) {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-5 py-3 border-b bg-card flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-md flex items-center justify-center bg-primary-soft text-primary">
-            {isSaleReturn ? (
-              <CornerDownLeft className="h-5 w-5" />
-            ) : (
-              <CornerUpLeft className="h-5 w-5" />
-            )}
-          </div>
-          <div>
-            <h1 className="text-[17px] font-bold tracking-tight">
-              New {isSaleReturn ? "Sale Return" : "Purchase Return"}
-            </h1>
-            <p className="text-[11px] text-muted-foreground">
-              <span className="font-mono font-semibold text-foreground">{ret.number}</span> · Ctrl+S
-              save · Esc cancel
-            </p>
-          </div>
+      <div className="px-5 py-3 border-b bg-card flex items-center gap-3">
+        <div className="h-10 w-10 rounded-md flex items-center justify-center bg-primary-soft text-primary shrink-0">
+          {isSaleReturn ? (
+            <CornerDownLeft className="h-5 w-5" />
+          ) : (
+            <CornerUpLeft className="h-5 w-5" />
+          )}
         </div>
-        <div className="flex items-center gap-2">
-          <label className="flex items-center gap-2 h-9 px-3 rounded-md border bg-background cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={gstOn}
-              onChange={toggleGst}
-              className="accent-primary"
-            />
-            <span className="text-[12px] font-semibold">GST</span>
-          </label>
-          <Button variant="outline" size="sm" onClick={() => navigate({ to: backPath })}>
-            <X className="h-3.5 w-3.5" /> Cancel
-          </Button>
-          <Button size="sm" onClick={save} disabled={saving}>
-            {saving ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Save className="h-3.5 w-3.5" />
-            )}
-            {saving ? "Saving…" : "Save"}
-          </Button>
+        <div className="min-w-0">
+          <h1 className="text-[17px] font-bold tracking-tight leading-tight">
+            New {isSaleReturn ? "Sale Return" : "Purchase Return"}
+          </h1>
+          <p className="text-[11px] text-muted-foreground">
+            <span className="font-mono font-semibold text-foreground">{ret.number}</span>
+          </p>
         </div>
       </div>
 
@@ -445,15 +464,13 @@ export function ReturnForm({ mode }: Props) {
                   onKeyDown={(e) => {
                     if (e.key === "ArrowDown") {
                       e.preventDefault();
-                      setPartyNavigated(true);
                       setPartyIdx((i) => Math.min(partySuggests.length - 1, i + 1));
                     } else if (e.key === "ArrowUp") {
                       e.preventDefault();
-                      setPartyNavigated(true);
                       setPartyIdx((i) => Math.max(0, i - 1));
                     } else if (e.key === "Enter") {
                       e.preventDefault();
-                      if (partySuggests[partyIdx] && (partyQ.trim() || partyNavigated)) {
+                      if (partySuggests[partyIdx]) {
                         selectParty(partySuggests[partyIdx]);
                       }
                     }
@@ -483,6 +500,7 @@ export function ReturnForm({ mode }: Props) {
               )}
             </div>
             <Field
+              id="ret-date"
               label="Return Date"
               type="date"
               value={ret.date}
@@ -501,7 +519,7 @@ export function ReturnForm({ mode }: Props) {
                     setInvOpen(true);
                     setInvIdx(0);
                   }}
-                  onFocus={() => invQ && setInvOpen(true)}
+                  onFocus={() => setInvOpen(true)}
                   onBlur={() => setTimeout(() => setInvOpen(false), 150)}
                   onKeyDown={(e) => {
                     if (e.key === "ArrowDown") {
@@ -554,9 +572,10 @@ export function ReturnForm({ mode }: Props) {
             <span className="text-[13px] font-semibold">
               Returned Items ({ret.lineItems.length})
             </span>
-            <span className="text-[11px] text-muted-foreground">Search below to add items</span>
+            <span className="text-[11px] text-muted-foreground">
+              Search item to add, or pick the original bill to auto-load
+            </span>
           </div>
-          <ReturnItemSearchBar items={items} onAdd={addLineItem} />
           <div className="overflow-x-auto rounded-b-lg">
             <table className="w-full text-[13px] min-w-[640px]">
               <thead className="text-[11px] text-muted-foreground uppercase tracking-wider">
@@ -579,6 +598,7 @@ export function ReturnForm({ mode }: Props) {
                     <td className="px-3 py-1.5 font-medium">{l.name}</td>
                     <td className="py-1.5 px-1">
                       <NumInput
+                        id={`qty-${l.id}`}
                         value={l.qty}
                         onValue={(n) => updateLine(l.id, { qty: n })}
                         className="w-full h-7 px-1.5 text-right border rounded bg-background focus:border-primary outline-none"
@@ -628,16 +648,7 @@ export function ReturnForm({ mode }: Props) {
                     </td>
                   </tr>
                 ))}
-                {ret.lineItems.length === 0 && (
-                  <tr className="border-t">
-                    <td
-                      colSpan={gstOn ? 9 : 8}
-                      className="px-3 py-6 text-center text-muted-foreground text-[12px]"
-                    >
-                      No items yet — search above, or pick the original bill to auto-load
-                    </td>
-                  </tr>
-                )}
+                <ReturnItemSearchRow items={items} onAdd={addLineItem} gstOn={gstOn} />
               </tbody>
             </table>
           </div>
@@ -679,6 +690,32 @@ export function ReturnForm({ mode }: Props) {
           </div>
         </div>
       </div>
+
+      <div className="px-4 md:px-5 py-3 border-t bg-card flex items-center gap-2">
+        <span className="hidden md:inline text-[11px] text-muted-foreground mr-auto">
+          Tab/Enter to move · Ctrl+S save · Esc cancel
+        </span>
+        <label className="shrink-0 flex items-center gap-2 h-9 px-3 rounded-md border bg-background cursor-pointer select-none">
+          <input type="checkbox" checked={gstOn} onChange={toggleGst} className="accent-primary" />
+          <span className="text-[12px] font-semibold">GST</span>
+        </label>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => navigate({ to: backPath })}
+          className="shrink-0"
+        >
+          <X className="h-3.5 w-3.5" /> Cancel
+        </Button>
+        <Button size="sm" onClick={save} disabled={saving} className="flex-1 md:flex-none">
+          {saving ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Save className="h-3.5 w-3.5" />
+          )}
+          {saving ? "Saving…" : "Save"}
+        </Button>
+      </div>
       <QuickAddPartyDialog
         draft={quickAddParty}
         isSale={isSaleReturn}
@@ -689,17 +726,53 @@ export function ReturnForm({ mode }: Props) {
   );
 }
 
-function ReturnItemSearchBar({ items, onAdd }: { items: Item[]; onAdd: (i: Item) => void }) {
+// A real row in the same table as the filled line items — matching
+// InvoiceForm's pending-row pattern — instead of a standalone search bar
+// floating above it, so this looks and behaves the same as the Sales form.
+function ReturnItemSearchRow({
+  items,
+  onAdd,
+  gstOn,
+}: {
+  items: Item[];
+  onAdd: (i: Item) => void;
+  gstOn: boolean;
+}) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const [idx, setIdx] = useState(0);
-  // Enter should only commit a pick once the user has typed or
-  // arrow-navigated — a reflex Enter right after the dropdown opens on
-  // focus (now showing every item) shouldn't silently add a phantom line.
-  const [navigated, setNavigated] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [dropdownRect, setDropdownRect] = useState<{
+    top: number;
+    left: number;
+    width: number;
+  } | null>(null);
+
+  // The row lives inside a horizontally-scrollable table (overflow-x-auto),
+  // which also forces overflow-y to "auto" — a plain absolutely positioned
+  // dropdown would get silently clipped by the table's own scroll box.
+  // Render it through a portal instead, positioned from the input's rect.
+  useEffect(() => {
+    if (!open) return;
+    const updateRect = () => {
+      const el = inputRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      setDropdownRect({ top: r.bottom + 4, left: r.left, width: Math.max(r.width, 260) });
+    };
+    updateRect();
+    window.addEventListener("scroll", updateRect, true);
+    window.addEventListener("resize", updateRect);
+    return () => {
+      window.removeEventListener("scroll", updateRect, true);
+      window.removeEventListener("resize", updateRect);
+    };
+  }, [open]);
+
   // Empty query — browse the full item catalog (like a combobox), instead
-  // of showing nothing until the user starts typing.
+  // of showing nothing until the user starts typing. Enter always commits
+  // whichever row is highlighted (index 0 by default), matching what's
+  // visually shown as selected.
   const suggests = q.trim()
     ? items
         .filter(
@@ -711,17 +784,22 @@ function ReturnItemSearchBar({ items, onAdd }: { items: Item[]; onAdd: (i: Item)
         .slice(0, 8)
     : items.slice(0, 8);
 
+  // No self-refocus here — the parent moves focus to the newly added line's
+  // Qty field instead (see focusQtyId in ReturnForm), matching Sales' flow:
+  // pick an item, land straight on Qty to type how much actually came back.
   const pick = (it: Item) => {
     onAdd(it);
     setQ("");
     setOpen(false);
     setIdx(0);
-    setNavigated(false);
-    setTimeout(() => inputRef.current?.focus(), 30);
   };
+
   return (
-    <div className="p-2 relative bg-primary-soft/30 border-b">
-      <input
+    <tr className="border-t hover:bg-accent/20">
+      <td className="px-3 py-1.5"></td>
+      <td className="px-3 py-1.5">
+        <input
+          id="return-item-search"
           ref={inputRef}
           value={q}
           onChange={(e) => {
@@ -734,44 +812,91 @@ function ReturnItemSearchBar({ items, onAdd }: { items: Item[]; onAdd: (i: Item)
           onKeyDown={(e) => {
             if (e.key === "ArrowDown") {
               e.preventDefault();
-              setNavigated(true);
               setIdx((i) => Math.min(suggests.length - 1, i + 1));
             } else if (e.key === "ArrowUp") {
               e.preventDefault();
-              setNavigated(true);
               setIdx((i) => Math.max(0, i - 1));
             } else if (e.key === "Enter") {
               e.preventDefault();
-              if (suggests[idx] && (q.trim() || navigated)) pick(suggests[idx]);
+              if (suggests[idx]) pick(suggests[idx]);
             }
           }}
-          placeholder="🔍  Search item to add for return…"
-          className="w-full h-9 px-3 border rounded-md bg-background focus:border-primary focus:ring-2 focus:ring-ring/20 outline-none text-sm"
+          placeholder="Search item to add for return…"
+          className="w-full h-8 px-2 border rounded bg-background focus:border-primary focus:ring-2 focus:ring-ring/20 outline-none text-sm"
         />
-        {open && suggests.length > 0 && (
-          <div className="absolute z-30 top-full left-2 right-2 mt-1 border rounded-md bg-popover shadow-lg max-h-48 overflow-auto">
-            {suggests.map((it, i) => (
-              <div
-                key={it.id}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  pick(it);
-                }}
-                className={`px-3 py-2 cursor-pointer flex justify-between items-center ${i === idx ? "bg-accent" : "hover:bg-accent"}`}
-              >
-                <div>
-                  <span className="font-medium">{it.name}</span>
-                  {it.sku && (
-                    <span className="text-[11px] text-muted-foreground ml-2">{it.sku}</span>
-                  )}
+        {open &&
+          suggests.length > 0 &&
+          dropdownRect &&
+          createPortal(
+            <div
+              style={{
+                position: "fixed",
+                top: dropdownRect.top,
+                left: dropdownRect.left,
+                width: dropdownRect.width,
+              }}
+              className="z-50 border rounded-md bg-popover shadow-elevated max-h-72 overflow-auto"
+            >
+              {suggests.map((it, i) => (
+                <div
+                  key={it.id}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    pick(it);
+                  }}
+                  className={`px-3 py-2 text-sm cursor-pointer flex justify-between ${i === idx ? "bg-accent" : "hover:bg-accent"}`}
+                >
+                  <div>
+                    <div className="font-semibold">{it.name}</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      Stock: {it.stock} {it.unit}
+                    </div>
+                  </div>
                 </div>
-                <span className="text-[11px] text-muted-foreground">
-                  Stock: {it.stock} {it.unit}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-    </div>
+              ))}
+            </div>,
+            document.body,
+          )}
+      </td>
+      <td className="py-1.5 px-1">
+        <input
+          disabled
+          className="w-full h-7 px-1.5 text-right border rounded bg-muted/40 text-muted-foreground/50 outline-none cursor-not-allowed"
+        />
+      </td>
+      <td className="py-1.5 px-1">
+        <input
+          disabled
+          className="w-full h-7 px-1.5 border rounded bg-muted/40 text-muted-foreground/50 outline-none cursor-not-allowed"
+        />
+      </td>
+      <td className="py-1.5 px-1">
+        <input
+          disabled
+          className="w-full h-7 px-1.5 text-right border rounded bg-muted/40 text-muted-foreground/50 outline-none cursor-not-allowed"
+        />
+      </td>
+      <td className="py-1.5 px-1">
+        <input
+          disabled
+          className="w-full h-7 px-1.5 text-right border rounded bg-muted/40 text-muted-foreground/50 outline-none cursor-not-allowed"
+        />
+      </td>
+      {gstOn && (
+        <td className="py-1.5 px-1">
+          <input
+            disabled
+            className="w-full h-7 px-1.5 text-right border rounded bg-muted/40 text-muted-foreground/50 outline-none cursor-not-allowed"
+          />
+        </td>
+      )}
+      <td className="py-1.5 px-1">
+        <input
+          disabled
+          className="w-full h-7 px-1.5 text-right border rounded bg-muted/40 text-muted-foreground/50 outline-none cursor-not-allowed"
+        />
+      </td>
+      <td className="py-1.5 px-1"></td>
+    </tr>
   );
 }

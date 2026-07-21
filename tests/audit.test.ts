@@ -487,6 +487,25 @@ for (let t = 0; t < 300; t++) {
   assert(approx(cash, 500 - 120 - 50), `T7: cash ${cash} != 330`);
 }
 
+/* ═══ TEST 10: a bank-mode expense is NOT double-counted in bankFlows ═══
+   A bank expense already moved the account's stored balance at save time;
+   the Bank page / dashboard add bankFlows ON TOP of stored balances, so
+   bankFlows must exclude anything carrying a bankId. A cash expense (no
+   bankId) must still be counted in cashFlows. Regression guard for A1. */
+{
+  const bankExp: Expense[] = [
+    { id: nid(), date: "2026-07-01", category: "Rent", amount: 5000, paymentMode: "bank", bankId: "bk1", createdAt: "" },
+  ];
+  const bankOut = netFlow(bankFlows([], [], bankExp, []));
+  assert(bankOut === 0, `T10: bank expense must not appear in bankFlows (got ${bankOut})`);
+
+  const cashExp: Expense[] = [
+    { id: nid(), date: "2026-07-01", category: "Tea", amount: 50, paymentMode: "cash", createdAt: "" },
+  ];
+  const cashOut = netFlow(cashFlows([], [], cashExp, [], []));
+  assert(cashOut === -50, `T10: cash expense must still count in cashFlows (got ${cashOut})`);
+}
+
 console.log(`\n══════════════════════════════════════`);
 
 /* ═══ TEST 9: opening balance sign convention — never double counted ═══ */

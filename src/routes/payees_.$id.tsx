@@ -2,8 +2,11 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PayeeRepo, ExpenseRepo, BankRepo, CompanyRepo } from "@/repositories";
 import { fmtMoney, fmtDate } from "@/lib/format";
-import { printWithName } from "@/lib/print";
-import { downloadElementAsPdf, shareElementAsPdf } from "@/lib/pdf";
+import { printOrEscapeStandalone } from "@/lib/print";
+import { useAutoPrintFromUrl } from "@/hooks/useAutoPrintFromUrl";
+import { useRepoData } from "@/hooks/useRepoData";
+import { downloadElementAsPdf } from "@/lib/pdf";
+import { useShareablePdf } from "@/hooks/useShareablePdf";
 import { downloadXlsx } from "@/lib/xlsx";
 import { fmtMode } from "@/components/ModePills";
 import type { Payee } from "@/types";
@@ -14,20 +17,30 @@ export const Route = createFileRoute("/payees_/$id")({ component: PayeeLedgerPag
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
+// Keeps the date range selected everywhere — across switching to a
+// different payee entirely, anything short of an actual page reload (which
+// starts fresh again).
+let dateCache: { dateFrom: string; dateTo: string } | null = null;
+
 function PayeeLedgerPage() {
+  const _repoV = useRepoData();
   const { id } = Route.useParams();
   const navigate = useNavigate();
   const [payee, setPayee] = useState<Payee | null | undefined>(undefined);
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  const [dateFrom, setDateFrom] = useState(() => dateCache?.dateFrom ?? "");
+  const [dateTo, setDateTo] = useState(() => dateCache?.dateTo ?? "");
   const [pdfBusy, setPdfBusy] = useState<"download" | "share" | null>(null);
   const printRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setPayee(PayeeRepo.get(id) ?? null);
-  }, [id]);
+  }, [id, _repoV]);
 
-  const bankNameById = useMemo(() => new Map(BankRepo.all().map((b) => [b.id, b.name])), []);
+  useEffect(() => {
+    dateCache = { dateFrom, dateTo };
+  }, [dateFrom, dateTo]);
+
+  const bankNameById = useMemo(() => new Map(BankRepo.all().map((b) => [b.id, b.name])), [_repoV]);
 
   // Every expense ever paid to this payee, oldest first, with a running
   // total — same shape as the party ledgers, but one-directional (an
@@ -37,7 +50,7 @@ function PayeeLedgerPage() {
     return ExpenseRepo.all()
       .filter((e) => e.payeeId === payee.id)
       .sort((a, b) => a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt));
-  }, [payee]);
+  }, [payee, _repoV]);
 
   const rows = useMemo(() => {
     let running = 0;
@@ -57,8 +70,16 @@ function PayeeLedgerPage() {
 
   const pdfName = () => `Payee-Ledger-${(payee?.name ?? "Payee").replace(/\s+/g, "-")}`;
 
+  // Re-entry point for printOrEscapeStandalone's standalone-app escape (see
+  // lib/print.ts) — this tab opened fresh with ?print=1, so print
+  // immediately once the payee has loaded.
+  useAutoPrintFromUrl(payee ? pdfName() : null, !!payee);
+
+  const { shareReady, share, resetShare } = useShareablePdf("Ledger");
+
   const handleDownloadPdf = async () => {
     if (!printRef.current || pdfBusy) return;
+    resetShare();
     setPdfBusy("download");
     try {
       await downloadElementAsPdf(printRef.current, pdfName(), "portrait");
@@ -74,10 +95,7 @@ function PayeeLedgerPage() {
     if (!printRef.current || pdfBusy) return;
     setPdfBusy("share");
     try {
-      const result = await shareElementAsPdf(printRef.current, pdfName(), "portrait");
-      if (result === "shared") toast.success("Ledger shared");
-      else if (result === "downloaded")
-        toast.info("Sharing isn't supported here — PDF downloaded instead");
+      await share(printRef.current, pdfName(), "portrait");
     } catch {
       toast.error("Could not share ledger — try Download PDF instead");
     } finally {
@@ -177,13 +195,13 @@ function PayeeLedgerPage() {
           <button
             onClick={handleShare}
             disabled={pdfBusy !== null}
-            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50"
-            title="Share PDF"
+            className={`h-8 w-8 shrink-0 rounded-md border bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50 ${shareReady ? "border-primary ring-2 ring-primary animate-pulse" : "border-gray-200"}`}
+            title={shareReady ? "PDF ready — tap again to share" : "Share PDF"}
           >
             <Share2 className="h-4 w-4" />
           </button>
           <button
-            onClick={() => printWithName(pdfName())}
+            onClick={() => printOrEscapeStandalone(pdfName(), undefined, handleDownloadPdf)}
             className="inline-flex items-center gap-1.5 h-8 px-3 bg-primary text-white rounded-md text-sm font-semibold hover:opacity-90 transition"
             title="Print"
           >
@@ -207,7 +225,53 @@ function PayeeLedgerPage() {
               </p>
             </div>
           </div>
-          <div className="overflow-x-auto rounded-b-lg">
+          {/* The mobile/desktop split below is screen-only — print must
+              always show the real table regardless of the device it's
+              triggered from (a phone's own Print button included), so this
+              overrides both sides of the split back for @media print
+              rather than trusting how a given browser resolves `md:` during
+              an actual print render. */}
+          <style>{`@media print {
+            .payee-ledger-mobile-cards { display: none !important; }
+            .payee-ledger-table { display: block !important; }
+          }`}</style>
+          {/* Mobile card list — a 6-column table doesn't fit a phone; this
+              is the same read-only data as one row-card per payment instead
+              (no click action here either, same as the desktop table). */}
+          <div className="md:hidden payee-ledger-mobile-cards">
+            {rows.length === 0 ? (
+              <div className="text-center py-14 text-gray-400">No payments to {payee.name} yet</div>
+            ) : (
+              <div className="divide-y divide-gray-100">
+                {rows.map((r) => (
+                  <div key={r.id} className="bg-white p-4">
+                    <div className="flex items-start justify-between gap-3 mb-1">
+                      <div className="min-w-0">
+                        <p className="font-medium text-gray-800 truncate">{r.category}</p>
+                        <p className="text-xs text-gray-400 mt-0.5 truncate">
+                          {fmtDate(r.date)} ·{" "}
+                          {r.paymentMode === "bank"
+                            ? `Bank — ${bankNameById.get(r.bankId ?? "") ?? "unspecified"}`
+                            : fmtMode(r.paymentMode)}
+                        </p>
+                      </div>
+                      <p className="font-bold tabular-nums shrink-0 text-gray-800">
+                        {fmtMoney(r.amount)}
+                      </p>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-xs text-gray-400 truncate">{r.notes ?? "—"}</span>
+                      <span className="text-xs font-semibold text-gray-500 shrink-0">
+                        Total: {fmtMoney(r.running)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="hidden md:block overflow-x-auto rounded-b-lg payee-ledger-table">
             <table className="w-full text-[12px] border-collapse min-w-[640px]">
               <thead>
                 <tr className="bg-gray-50">

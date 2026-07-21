@@ -11,8 +11,19 @@ import {
 import { fmtMoney, fmtDate } from "@/lib/format";
 import { usePagination, PaginationBar } from "@/components/Pagination";
 import { ItemDialog, StockAdjustDialog } from "./items";
+import { usePermissions } from "@/hooks/usePermissions";
+import { useRepoData } from "@/hooks/useRepoData";
 import type { Item, Invoice, Return } from "@/types";
-import { ArrowLeft, Package, Pencil, ArrowUpDown, AlertCircle, TrendingUp } from "lucide-react";
+import {
+  ArrowLeft,
+  Package,
+  Pencil,
+  ArrowUpDown,
+  AlertCircle,
+  TrendingUp,
+  ArrowDownLeft,
+  ArrowUpRight,
+} from "lucide-react";
 
 export const Route = createFileRoute("/items_/$id")({ component: ItemDetailPage });
 
@@ -32,8 +43,11 @@ interface HistoryRow {
 }
 
 function ItemDetailPage() {
+  const _repoV = useRepoData();
   const { id } = Route.useParams();
   const navigate = useNavigate();
+  const { isOwner, canEdit } = usePermissions();
+  const editAllowed = isOwner || canEdit("masterData");
   const [item, setItem] = useState<Item | null | undefined>(undefined);
   const [editOpen, setEditOpen] = useState(false);
   const [adjustOpen, setAdjustOpen] = useState(false);
@@ -41,9 +55,9 @@ function ItemDetailPage() {
 
   useEffect(() => {
     setItem(ItemRepo.get(id) ?? null);
-  }, [id, refreshKey]);
+  }, [id, refreshKey, _repoV]);
 
-  const { rows, soldQty, boughtQty, profit } = useMemo(() => {
+  const { rows, soldQty, profit } = useMemo(() => {
     const entries: HistoryRow[] = [];
     let soldQty = 0;
     let boughtQty = 0;
@@ -109,7 +123,7 @@ function ItemDetailPage() {
       (a, b) => b.date.localeCompare(a.date) || (b.created ?? "").localeCompare(a.created ?? ""),
     );
     return { rows: entries, soldQty, boughtQty, profit };
-  }, [item, id, refreshKey]);
+  }, [item, id, refreshKey, _repoV]);
 
   const pg = usePagination(rows);
 
@@ -141,7 +155,7 @@ function ItemDetailPage() {
   return (
     <div className="flex flex-col h-full bg-[#f5f6fa]">
       {/* Header */}
-      <div className="bg-white border-b px-5 py-3 flex items-center justify-between gap-3 flex-wrap">
+      <div className="bg-white border-b px-5 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <button
             onClick={() => navigate({ to: "/items" })}
@@ -158,28 +172,30 @@ function ItemDetailPage() {
               {item.name}
             </h1>
             <p className="text-[12px] text-gray-400">
-              {item.category || "No category"} · Unit: {item.unit} · Item History
+              {item.category || "No category"} · Unit: {item.unit}
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setAdjustOpen(true)}
-            className="inline-flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 text-gray-700 rounded-md text-sm font-semibold hover:bg-gray-50 transition"
-          >
-            <ArrowUpDown className="h-4 w-4" /> Adjust Stock
-          </button>
-          <button
-            onClick={() => setEditOpen(true)}
-            className="inline-flex items-center gap-1.5 h-8 px-3 bg-primary text-white rounded-md text-sm font-semibold hover:opacity-90 transition"
-          >
-            <Pencil className="h-4 w-4" /> Edit Item
-          </button>
-        </div>
+        {editAllowed && (
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <button
+              onClick={() => setAdjustOpen(true)}
+              className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 h-9 px-4 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-semibold shadow-sm hover:bg-gray-50 hover:border-gray-300 hover:shadow transition"
+            >
+              <ArrowUpDown className="h-4 w-4" /> Adjust Stock
+            </button>
+            <button
+              onClick={() => setEditOpen(true)}
+              className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 h-9 px-4 bg-primary text-white rounded-lg text-sm font-semibold shadow-sm hover:opacity-90 hover:shadow transition"
+            >
+              <Pencil className="h-4 w-4" /> Edit Item
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Summary */}
-      <div className="grid grid-cols-3 lg:grid-cols-6 bg-white border-b">
+      {/* Summary — desktop: one row across all 6, plenty of width to spare */}
+      <div className="hidden lg:grid grid-cols-6 bg-white border-b">
         <Stat
           label="Current Stock"
           value={`${item.stock} ${item.unit}`}
@@ -197,17 +213,92 @@ function ItemDetailPage() {
         />
       </div>
 
+      {/* Summary — mobile/tablet: 6 stats don't fit one row at this width, and
+          wrapping to a 2-row grid (the old behavior) reads cramped and cuts
+          "Profit Earned" awkwardly. A horizontally-scrolling strip of small
+          KPI cards keeps every stat a single, evenly-sized tap/glance target
+          in one row, native-app style, instead of a squeezed table grid. */}
+      <div className="lg:hidden bg-white border-b py-3">
+        <div className="flex gap-2.5 overflow-x-auto px-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <MobileStatCard
+            label="Current Stock"
+            value={`${item.stock} ${item.unit}`}
+            color={item.stock < 0 ? "text-rose-600" : "text-gray-800"}
+          />
+          <MobileStatCard label="Stock Value" value={fmtMoney(r2(item.stock * item.purchasePrice))} />
+          <MobileStatCard label="Purchase Price" value={fmtMoney(item.purchasePrice)} />
+          <MobileStatCard label="Sale Price" value={fmtMoney(item.salePrice)} />
+          <MobileStatCard label="Total Sold" value={`${soldQty} ${item.unit}`} />
+          <MobileStatCard
+            label="Profit Earned"
+            value={fmtMoney(profit)}
+            color={profit >= 0 ? "text-emerald-600" : "text-rose-600"}
+            icon
+          />
+        </div>
+      </div>
+
       {/* History */}
       <div className="flex-1 overflow-auto p-5">
         <div className="bg-white border rounded-lg shadow-sm overflow-hidden max-w-5xl mx-auto flex flex-col">
-          <div className="px-5 py-3 border-b flex items-center justify-between">
+          <div className="px-5 py-3 border-b">
             <p className="text-sm font-bold text-gray-800">Transaction History</p>
-            <p className="text-[11px] text-gray-400">
-              Opening stock: {item.openingStock} {item.unit} · Purchased: {boughtQty} · Sold:{" "}
-              {soldQty}
-            </p>
           </div>
-          <table className="w-full text-[12.5px] border-collapse">
+          {/* Mobile card list — a table of 7 columns doesn't fit a phone;
+              this is the same history as one tappable card per entry instead. */}
+          <div className="md:hidden">
+            {rows.length === 0 ? (
+              <p className="text-center py-14 text-gray-400">No transactions for this item yet</p>
+            ) : (
+              <div className="divide-y divide-gray-100">
+                {pg.paged.map((e, i) => {
+                  const isIn = e.qtyIn > 0;
+                  return (
+                    <div
+                      key={i}
+                      onClick={() => openRow(e)}
+                      className={`flex items-center gap-3 px-4 py-3 ${e.docId ? "cursor-pointer active:bg-gray-50" : ""}`}
+                    >
+                      {/* Tinted in/out marker — green = stock came in (purchase /
+                          sale return), red = stock went out (sale / purchase return) */}
+                      <div
+                        className={`h-9 w-9 rounded-full flex items-center justify-center shrink-0 ${isIn ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600"}`}
+                      >
+                        {isIn ? (
+                          <ArrowDownLeft className="h-4 w-4" />
+                        ) : (
+                          <ArrowUpRight className="h-4 w-4" />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold text-[13px] text-gray-800 truncate leading-tight">
+                          {e.type}
+                        </p>
+                        <p className="text-[11px] text-gray-400 truncate mt-0.5">
+                          {fmtDate(e.date)}
+                          {e.party ? ` · ${e.party}` : ""}
+                          {e.rate != null ? ` · Rate ${fmtMoney(e.rate)}` : ""}
+                        </p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p
+                          className={`font-bold tabular-nums text-[13px] leading-tight ${isIn ? "text-emerald-600" : "text-rose-600"}`}
+                        >
+                          {isIn ? `+${e.qtyIn}` : `−${e.qtyOut}`} {item.unit}
+                        </p>
+                        {e.ref && (
+                          <p className="font-mono text-[10px] text-blue-500 mt-0.5">{e.ref}</p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Table (desktop) */}
+          <table className="hidden md:table w-full text-[12.5px] border-collapse">
             <thead>
               <tr className="bg-gray-50">
                 {["Date", "Type", "Ref #", "Party", "Rate", "Qty In", "Qty Out"].map((h, i) => (
@@ -309,6 +400,28 @@ function Stat({
         {label}
       </p>
       <p className={`text-[15px] font-bold tabular-nums ${color}`}>{value}</p>
+    </div>
+  );
+}
+
+function MobileStatCard({
+  label,
+  value,
+  color = "text-gray-800",
+  icon,
+}: {
+  label: string;
+  value: string;
+  color?: string;
+  icon?: boolean;
+}) {
+  return (
+    <div className="shrink-0 min-w-[116px] rounded-xl border border-gray-100 bg-white shadow-sm px-3.5 py-2.5">
+      <p className="text-[9px] text-gray-400 font-semibold uppercase tracking-wide mb-1 flex items-center gap-1">
+        {icon && <TrendingUp className="h-3 w-3" />}
+        {label}
+      </p>
+      <p className={`text-[14px] font-bold tabular-nums whitespace-nowrap ${color}`}>{value}</p>
     </div>
   );
 }

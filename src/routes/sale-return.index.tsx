@@ -1,34 +1,59 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { SaleReturnRepo, ItemRepo } from "@/repositories";
+import { useRepoData } from "@/hooks/useRepoData";
+import { newBatch, commitBatch } from "@/repositories/base";
 import type { Return } from "@/types";
 import { fmtMoney, fmtDate } from "@/lib/format";
 import { Plus, CornerDownLeft, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { DataTable } from "@/components/DataTable";
 import { PageHeader } from "@/components/PageHeader";
+import { usePagination } from "@/components/Pagination";
+import { usePermissions } from "@/hooks/usePermissions";
 
 export const Route = createFileRoute("/sale-return/")({ component: SaleReturnPage });
 
 function SaleReturnPage() {
   const navigate = useNavigate();
+  const { isOwner, canEdit, canDelete } = usePermissions();
+  const editAllowed = isOwner || canEdit("sales");
+  const deleteAllowed = isOwner || canDelete("sales");
   const [rows, setRows] = useState<Return[]>([]);
   const refresh = () => setRows(SaleReturnRepo.all().sort((a, b) => b.date.localeCompare(a.date)));
-  useEffect(refresh, []);
+  const _repoV = useRepoData();
+  useEffect(refresh, [_repoV]);
+
+  const pg = usePagination(rows);
 
   const totalCredit = rows.reduce((s, r) => s + r.total, 0);
 
   const handleDelete = (r: Return) => {
+    if (!deleteAllowed) {
+      toast.error("You don't have permission to delete sale returns");
+      return;
+    }
     if (
       !confirm(`Delete return ${r.number}? Returned quantities will be removed from stock again.`)
     )
       return;
-    // Reverse the stock addition this sale return made
-    for (const l of r.lineItems) {
-      const it = ItemRepo.get(l.itemId);
-      if (it) ItemRepo.adjustField(it.id, "stock", -l.qty);
+    // Bail if another device already deleted it — the stock reversal is a
+    // blind atomic increment, so running it twice would double-adjust stock.
+    const live = SaleReturnRepo.get(r.id);
+    if (!live) {
+      toast.info(`Return ${r.number} was already deleted`);
+      refresh();
+      return;
     }
-    SaleReturnRepo.remove(r.id);
+    // Stock reversal and the delete must land together as one atomic write —
+    // previously these were separate calls, so a failure between them left
+    // stock reversed with the return still present (or vice versa).
+    const batch = newBatch();
+    for (const l of live.lineItems) {
+      if (ItemRepo.get(l.itemId)) ItemRepo.adjustFieldBatched(batch, l.itemId, "stock", -l.qty);
+    }
+    SaleReturnRepo.removeBatched(batch, live.id);
+    commitBatch(batch, "delete sale return");
     refresh();
     toast.success("Sale return deleted — stock adjusted");
   };
@@ -40,16 +65,70 @@ function SaleReturnPage() {
         subtitle={`${rows.length} credit notes · Total: ${fmtMoney(totalCredit)}`}
         icon={<CornerDownLeft className="h-5 w-5" />}
         actions={
-          <button
-            onClick={() => navigate({ to: "/sale-return/new" })}
-            className="inline-flex items-center gap-1.5 h-8 px-4 bg-primary text-primary-foreground rounded-md text-sm font-semibold hover:opacity-90 transition"
-          >
-            <Plus className="h-4 w-4" /> New Sale Return
-          </button>
+          editAllowed && (
+            <button
+              onClick={() => navigate({ to: "/sale-return/new" })}
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 h-8 px-4 bg-primary text-primary-foreground rounded-md text-sm font-semibold hover:opacity-90 transition"
+            >
+              <Plus className="h-4 w-4" /> New Sale Return
+            </button>
+          )
         }
       />
 
-      <div className="p-6 flex-1 min-h-0 flex">
+      {/* Mobile card list — a table of 7 columns doesn't fit a phone; this
+          is the same data as one tappable card per credit note instead. */}
+      <div className="md:hidden flex-1 overflow-auto">
+        {rows.length === 0 ? (
+          <div className="text-center py-16 text-gray-400">
+            <CornerDownLeft className="h-10 w-10 mx-auto mb-3 text-gray-200" />
+            <p className="font-medium">No sale returns found</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-100">
+            {pg.paged.map((r) => (
+              <div
+                key={r.id}
+                onClick={() => navigate({ to: "/sale-return/$id", params: { id: r.id } })}
+                className="bg-white px-4 py-3 active:bg-gray-50 flex items-center gap-3"
+              >
+                <div className="h-9 w-9 rounded-full flex items-center justify-center shrink-0 bg-rose-50 text-rose-600">
+                  <CornerDownLeft className="h-4 w-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-semibold text-[13px] text-gray-800 truncate font-mono leading-tight">
+                      {r.number}
+                    </p>
+                    <p className="font-bold text-[13px] text-gray-800 tabular-nums shrink-0 leading-tight">
+                      {fmtMoney(r.total)}
+                    </p>
+                  </div>
+                  <p className="text-[11px] text-gray-400 mt-1 truncate">
+                    {fmtDate(r.date)} · {r.partyName}
+                    {r.originalRef ? ` · vs ${r.originalRef}` : ""} · {r.lineItems.length} items
+                  </p>
+                </div>
+                {deleteAllowed && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDelete(r);
+                    }}
+                    className="p-1.5 rounded hover:bg-rose-50 text-gray-300 hover:text-rose-500 transition shrink-0 -mr-1.5"
+                    title="Delete return"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Table (desktop) */}
+      <div className="hidden md:flex flex-1 min-h-0 p-6">
         <DataTable
           activateOnClick
           columns={[
@@ -90,18 +169,19 @@ function SaleReturnPage() {
               key: "action",
               label: "Action",
               align: "center",
-              render: (r) => (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDelete(r);
-                  }}
-                  className="p-1 rounded hover:bg-rose-50 text-gray-400 hover:text-rose-500 transition"
-                  title="Delete return"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              ),
+              render: (r) =>
+                deleteAllowed && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDelete(r);
+                    }}
+                    className="p-1 rounded hover:bg-rose-50 text-gray-400 hover:text-rose-500 transition"
+                    title="Delete return"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                ),
             },
           ]}
           rows={rows}

@@ -83,7 +83,15 @@ function cleanMoneyCell(s: string): string {
 }
 
 function escapeCell(v: string): string {
-  const cleaned = cleanMoneyCell(v);
+  let cleaned = cleanMoneyCell(v);
+  // Neutralize spreadsheet formula injection: Excel/Sheets execute a cell that
+  // begins with = + - @ (or tab/CR) as a formula, so a user-entered party name
+  // or note like `=HYPERLINK(...)` would run on whoever opens the export.
+  // Prefix such a cell with a single quote to force text — but NOT a plain
+  // number, so a negative amount like -50 stays numeric.
+  if (/^[=+\-@\t\r]/.test(cleaned) && !/^[-+]?[\d,]*\.?\d+$/.test(cleaned)) {
+    cleaned = `'${cleaned}`;
+  }
   return /[",\n\r]/.test(cleaned) ? `"${cleaned.replace(/"/g, '""')}"` : cleaned;
 }
 

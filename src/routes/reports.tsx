@@ -12,14 +12,18 @@ import {
   CompanyRepo,
 } from "@/repositories";
 import { fmtMoney, fmtDate, today, ymd } from "@/lib/format";
-import { printWithName } from "@/lib/print";
+import { printOrEscapeStandalone } from "@/lib/print";
+import { useAutoPrintFromUrl } from "@/hooks/useAutoPrintFromUrl";
+import { useRepoData } from "@/hooks/useRepoData";
 import { computeCogs, buildPartyStatement } from "@/lib/ledger";
 import { downloadCsv } from "@/lib/csv";
 import { downloadXlsx } from "@/lib/xlsx";
-import { downloadElementAsPdf, shareElementAsPdf } from "@/lib/pdf";
+import { downloadElementAsPdf } from "@/lib/pdf";
+import { useShareablePdf } from "@/hooks/useShareablePdf";
 import { partyStatementSheet } from "@/lib/partySheet";
-import { PartyStatementRowBlock } from "./parties_.$id";
+import { PartyStatementRowBlock, PartyStatementCardBlock } from "./parties_.$id";
 import { fmtMode } from "@/components/ModePills";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import {
   FileText,
@@ -34,6 +38,10 @@ import {
   Share2,
   Search,
   Calendar,
+  ChevronLeft,
+  ChevronRight,
+  SlidersHorizontal,
+  Loader2,
 } from "lucide-react";
 
 export const Route = createFileRoute("/reports")({
@@ -68,20 +76,51 @@ const REPORTS = [
   { key: "daily", label: "Today's Summary", icon: BarChart3, desc: "Today's activity" },
 ];
 
+// Keeps the tab/range selected everywhere — across leaving to view a linked
+// invoice/party, across leaving to a different page entirely and coming
+// back, anything short of an actual page reload (which starts fresh again).
+let activeReportCache: string | null = null;
+let dateCache: { dateFrom: string; dateTo: string } | null = null;
+
 function ReportsPage() {
+  useRepoData();
   const { r } = Route.useSearch();
-  const [active, setActive] = useState(REPORTS.some((x) => x.key === r) ? (r as string) : "pl");
-  const [dateFrom, setDateFrom] = useState(monthStart);
-  const [dateTo, setDateTo] = useState(today);
+  const [active, setActive] = useState(() =>
+    REPORTS.some((x) => x.key === r) ? (r as string) : (activeReportCache ?? "pl"),
+  );
+  const [dateFrom, setDateFrom] = useState(() => dateCache?.dateFrom ?? monthStart());
+  const [dateTo, setDateTo] = useState(() => dateCache?.dateTo ?? today());
   const [pdfBusy, setPdfBusy] = useState<"download" | "share" | null>(null);
+  // Mobile-only: the report list and the report content don't fit side by
+  // side on a phone the way they do on desktop's two-pane layout, so mobile
+  // shows one at a time — the list first (like picking from a menu), then
+  // the chosen report full-width with a way back. Arriving via a direct
+  // link (?r=sales) skips straight to that report instead of the menu.
+  const [mobileShowReport, setMobileShowReport] = useState(() => REPORTS.some((x) => x.key === r));
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const printRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    activeReportCache = active;
+  }, [active]);
+  useEffect(() => {
+    dateCache = { dateFrom, dateTo };
+  }, [dateFrom, dateTo]);
 
   const current = REPORTS.find((r) => r.key === active);
   const reportFilename = () =>
     `${(current?.label ?? "Report").replace(/\s+/g, "-")}-${dateFrom}-to-${dateTo}`;
 
+  // Re-entry point for printOrEscapeStandalone's standalone-app escape (see
+  // lib/print.ts) — the ?r= param already in this URL restores the same
+  // report on reopen, so this just needs to fire once it has.
+  useAutoPrintFromUrl(current ? reportFilename() : null, !!current);
+
+  const { shareReady, share, resetShare } = useShareablePdf("Report");
+
   const handleDownloadPdf = async () => {
     if (!printRef.current || pdfBusy) return;
+    resetShare();
     setPdfBusy("download");
     try {
       await downloadElementAsPdf(printRef.current, reportFilename(), "landscape");
@@ -97,10 +136,7 @@ function ReportsPage() {
     if (!printRef.current || pdfBusy) return;
     setPdfBusy("share");
     try {
-      const result = await shareElementAsPdf(printRef.current, reportFilename(), "landscape");
-      if (result === "shared") toast.success("Report shared");
-      else if (result === "downloaded")
-        toast.info("Sharing isn't supported here — PDF downloaded instead");
+      await share(printRef.current, reportFilename(), "landscape");
     } catch {
       toast.error("Could not share report — try Download PDF instead");
     } finally {
@@ -110,16 +146,30 @@ function ReportsPage() {
 
   return (
     <div className="flex flex-col h-full bg-[#f7f7f9]">
-      <div className="bg-white border-b px-5 py-3.5 flex items-center justify-between gap-3 flex-wrap no-print">
-        <div className="flex items-center gap-2.5">
-          <BarChart3 className="h-5 w-5 text-primary shrink-0" />
-          <div>
-            <h1 className="text-[17px] font-bold text-gray-800 leading-tight">Reports</h1>
-            <p className="text-[12px] text-gray-400 leading-tight">{current?.desc}</p>
+      <div className="bg-white border-b px-5 py-3.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 no-print">
+        <div className="flex items-center justify-between sm:justify-start gap-2.5">
+          <div className="flex items-center gap-2.5">
+            <BarChart3 className="h-5 w-5 text-primary shrink-0" />
+            <div>
+              <h1 className="text-[17px] font-bold text-gray-800 leading-tight">Reports</h1>
+              <p className="text-[12px] text-gray-400 leading-tight">{current?.desc}</p>
+            </div>
           </div>
+          {/* Date Range moves into the Filters sheet on mobile — its own
+              inline row next to Download/Share/Print doesn't fit a phone. */}
+          <button
+            onClick={() => setMobileFiltersOpen(true)}
+            className="sm:hidden relative h-9 w-9 shrink-0 flex items-center justify-center rounded-lg border border-gray-200 bg-gray-50/60 text-gray-600"
+            title="Filters"
+          >
+            <SlidersHorizontal className="h-4 w-4" />
+            {(dateFrom !== monthStart() || dateTo !== today()) && (
+              <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-primary" />
+            )}
+          </button>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1.5 h-9 pl-3 pr-2.5 rounded-lg border border-gray-200 bg-gray-50/60">
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <div className="hidden sm:flex items-center gap-1.5 h-9 pl-3 pr-2.5 rounded-lg border border-gray-200 bg-gray-50/60">
             <Calendar className="h-3.5 w-3.5 text-gray-400 shrink-0" />
             <input
               type="date"
@@ -146,44 +196,126 @@ function ReportsPage() {
           <button
             onClick={handleShare}
             disabled={pdfBusy !== null}
-            className="h-9 w-9 shrink-0 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 hover:shadow-sm text-gray-600 flex items-center justify-center transition disabled:opacity-50"
-            title="Share report PDF"
+            className={`h-9 w-9 shrink-0 rounded-lg border bg-white hover:bg-gray-50 hover:shadow-sm text-gray-600 flex items-center justify-center transition disabled:opacity-50 ${shareReady ? "border-primary ring-2 ring-primary animate-pulse" : "border-gray-200"}`}
+            title={shareReady ? "PDF ready — tap again to share" : "Share report PDF"}
           >
             <Share2 className="h-4 w-4" />
           </button>
           <button
-            onClick={() => printWithName(reportFilename())}
-            className="inline-flex items-center gap-1.5 h-9 px-3.5 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-gray-600 hover:bg-gray-50 hover:shadow-sm transition"
+            onClick={() => printOrEscapeStandalone(reportFilename(), { r: active }, handleDownloadPdf)}
+            disabled={!!pdfBusy}
+            className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 h-9 px-3.5 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-gray-600 hover:bg-gray-50 hover:shadow-sm transition disabled:opacity-60 disabled:cursor-not-allowed"
             title="Print"
           >
-            <Printer className="h-3.5 w-3.5" /> Print
+            {pdfBusy ? (<><Loader2 className="h-3.5 w-3.5 animate-spin" /> Preparing…</>) : (<><Printer className="h-3.5 w-3.5" /> Print</>)}
           </button>
         </div>
       </div>
 
+      {/* Mobile filter sheet — Date Range doesn't fit inline next to
+          Download/Share/Print on a phone, so it lives here behind the
+          header's Filters button instead, same state as the desktop
+          inline control. */}
+      <Dialog open={mobileFiltersOpen} onOpenChange={setMobileFiltersOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Filters</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <label className="text-xs font-semibold text-gray-500 block mb-1.5">Date Range</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  className="flex-1 h-9 px-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                />
+                <span className="text-gray-300">–</span>
+                <input
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                  className="flex-1 h-9 px-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-between pt-1">
+              {(dateFrom !== monthStart() || dateTo !== today()) ? (
+                <button
+                  onClick={() => {
+                    setDateFrom(monthStart());
+                    setDateTo(today());
+                  }}
+                  className="text-xs text-gray-400 hover:text-gray-600 transition flex items-center gap-1"
+                >
+                  Reset to this month
+                </button>
+              ) : (
+                <span />
+              )}
+              <button
+                onClick={() => setMobileFiltersOpen(false)}
+                className="h-8 px-4 bg-primary text-primary-foreground rounded-md text-sm font-semibold hover:opacity-90 transition"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <div className="flex-1 flex min-h-0">
-        {/* Sidebar */}
-        <aside className="w-56 border-r bg-white overflow-y-auto shrink-0 no-print p-2">
+        {/* Sidebar — full-width report menu on mobile until one is picked;
+            a fixed 224px rail sitting alongside the content on desktop. */}
+        <aside
+          className={`${mobileShowReport ? "hidden" : "flex"} md:flex flex-col w-full md:w-56 border-r bg-white overflow-y-auto shrink-0 no-print p-2`}
+        >
           {REPORTS.map((r) => {
             const Icon = r.icon;
             const isActive = active === r.key;
             return (
               <button
                 key={r.key}
-                onClick={() => setActive(r.key)}
-                className={`w-full text-left mb-0.5 px-3 py-2.5 rounded-lg flex items-center gap-2.5 transition ${isActive ? "bg-primary-soft text-primary font-semibold" : "hover:bg-gray-50 text-gray-600"}`}
+                onClick={() => {
+                  setActive(r.key);
+                  setMobileShowReport(true);
+                }}
+                className={`w-full text-left mb-1 px-2.5 py-2 rounded-xl flex items-center gap-3 transition ${isActive ? "bg-primary-soft" : "hover:bg-gray-50"}`}
               >
-                <Icon
-                  className={`h-4 w-4 shrink-0 ${isActive ? "text-primary" : "text-gray-400"}`}
-                />
-                <p className="text-[12.5px] truncate">{r.label}</p>
+                <div
+                  className={`h-8 w-8 rounded-lg flex items-center justify-center shrink-0 ${isActive ? "bg-primary text-white" : "bg-gray-100 text-gray-500"}`}
+                >
+                  <Icon className="h-4 w-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p
+                    className={`text-[13px] truncate ${isActive ? "font-semibold text-primary" : "font-medium text-gray-700"}`}
+                  >
+                    {r.label}
+                  </p>
+                  {/* Description only on the mobile full-width list — the
+                      desktop rail (w-56) is too narrow for it. */}
+                  <p className="md:hidden text-[11px] text-gray-400 truncate mt-0.5">{r.desc}</p>
+                </div>
+                <ChevronRight className="md:hidden h-4 w-4 text-gray-300 shrink-0" />
               </button>
             );
           })}
         </aside>
 
-        {/* Report content (print-area so Print/PDF/Share all capture exactly this) */}
-        <div ref={printRef} className="flex-1 overflow-auto p-6 print-visible print:p-6">
+        {/* Report content (print-area so Print/PDF/Share all capture exactly
+            this) — hidden on mobile until a report is picked from the menu. */}
+        <div
+          ref={printRef}
+          className={`${mobileShowReport ? "flex" : "hidden"} md:flex flex-1 flex-col overflow-auto p-6 print-visible print:p-6`}
+        >
+          <button
+            onClick={() => setMobileShowReport(false)}
+            className="md:hidden no-print flex items-center gap-1 text-sm font-medium text-gray-500 hover:text-gray-700 mb-3 -mt-1"
+          >
+            <ChevronLeft className="h-4 w-4" /> All Reports
+          </button>
           <ReportView which={active} dateFrom={dateFrom} dateTo={dateTo} />
         </div>
       </div>
@@ -206,34 +338,55 @@ function ReportView({
 }) {
   const label = REPORTS.find((r) => r.key === which)?.label ?? which;
   const navigate = useNavigate();
+  const _repoV = useRepoData();
 
   const sales = useMemo(
     () => SalesRepo.all().filter((s) => inRange(s.date, dateFrom, dateTo)),
-    [dateFrom, dateTo],
+    [dateFrom, dateTo, _repoV],
   );
   const purchases = useMemo(
     () => PurchaseRepo.all().filter((s) => inRange(s.date, dateFrom, dateTo)),
-    [dateFrom, dateTo],
+    [dateFrom, dateTo, _repoV],
   );
   const expenses = useMemo(
     () => ExpenseRepo.all().filter((s) => inRange(s.date, dateFrom, dateTo)),
-    [dateFrom, dateTo],
+    [dateFrom, dateTo, _repoV],
   );
   const saleReturns = useMemo(
     () => SaleReturnRepo.all().filter((s) => inRange(s.date, dateFrom, dateTo)),
-    [dateFrom, dateTo],
+    [dateFrom, dateTo, _repoV],
   );
   const purchaseReturns = useMemo(
     () => PurchaseReturnRepo.all().filter((s) => inRange(s.date, dateFrom, dateTo)),
-    [dateFrom, dateTo],
+    [dateFrom, dateTo, _repoV],
   );
   const payments = useMemo(
     () => PaymentRepo.all().filter((s) => inRange(s.date, dateFrom, dateTo)),
-    [dateFrom, dateTo],
+    [dateFrom, dateTo, _repoV],
   );
-  const parties = useMemo(() => PartyRepo.all(), []);
-  const items = useMemo(() => ItemRepo.all(), []);
+  const parties = useMemo(() => PartyRepo.all(), [_repoV]);
+  const items = useMemo(() => ItemRepo.all(), [_repoV]);
   const [partySearch, setPartySearch] = useState("");
+
+  // Every party's full statement, built ONCE per (report, date-range) — not on
+  // every keystroke of the party search below. Building it is O(parties × all
+  // documents), so rebuilding it per keystroke froze the search box at scale.
+  // Only built when the Party Ledger report is actually open. `partySearch`
+  // is deliberately NOT a dependency — it only filters the memoized result.
+  const partyLedgerAll = useMemo(() => {
+    if (which !== "party-ledger") return [];
+    const data = {
+      sales: SalesRepo.all(),
+      purchases: PurchaseRepo.all(),
+      saleReturns: SaleReturnRepo.all(),
+      purchaseReturns: PurchaseReturnRepo.all(),
+      payments: PaymentRepo.all(),
+    };
+    return parties
+      .map((p) => ({ party: p, ledger: buildPartyStatement(p, data, dateFrom, dateTo) }))
+      .filter(({ ledger }) => ledger.rows.length > 0)
+      .sort((a, b) => a.party.name.localeCompare(b.party.name));
+  }, [which, dateFrom, dateTo, parties, _repoV]);
 
   if (which === "pl") {
     const revenue = sales.reduce((a, s) => a + s.total, 0);
@@ -509,17 +662,7 @@ function ReportView({
     // from FULL history — dateFrom/dateTo only control the visible window
     // inside buildPartyStatement (via a proper "Balance b/f" line), same as
     // the per-party Statement page.
-    const data = {
-      sales: SalesRepo.all(),
-      purchases: PurchaseRepo.all(),
-      saleReturns: SaleReturnRepo.all(),
-      purchaseReturns: PurchaseReturnRepo.all(),
-      payments: PaymentRepo.all(),
-    };
-    const perPartyAll = parties
-      .map((p) => ({ party: p, ledger: buildPartyStatement(p, data, dateFrom, dateTo) }))
-      .filter(({ ledger }) => ledger.rows.length > 0)
-      .sort((a, b) => a.party.name.localeCompare(b.party.name));
+    const perPartyAll = partyLedgerAll;
     const q = partySearch.trim().toLowerCase();
     const perParty = q
       ? perPartyAll.filter(({ party: p }) => p.name.toLowerCase().includes(q))
@@ -569,30 +712,39 @@ function ReportView({
             breakdown — too wide for portrait A4, so it gets cut off at the
             right edge when printed. Landscape gives it room to fit. */}
         <style>{`@media print { @page { size: A4 landscape; margin: 12mm; } }`}</style>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-base font-bold text-gray-800">{label}</h2>
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <h2 className="text-base font-bold text-gray-800 truncate">{label}</h2>
           <button
             onClick={() => downloadXlsx("Party Ledger", sheets)}
-            className="no-print inline-flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 rounded-md text-xs font-semibold text-gray-600 hover:bg-gray-50 transition"
+            title="Export Excel (one sheet per party)"
+            className="no-print shrink-0 inline-flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 rounded-md text-xs font-semibold text-gray-600 hover:bg-gray-50 transition"
           >
-            <Download className="h-3.5 w-3.5" /> Export Excel (one sheet per party)
+            <Download className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Export Excel (one sheet per party)</span>
+            <span className="sm:hidden">Export Excel</span>
           </button>
         </div>
-        <div className="mb-4 flex flex-wrap items-center gap-x-8 gap-y-2 bg-white border rounded-lg px-5 py-3">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-gray-500">Total Receivable:</span>
-            <span className="text-sm font-bold text-rose-600 tabular-nums">
-              {fmtMoney(totalReceivable)}
-            </span>
+        <div className="mb-4 space-y-2">
+          <div className="grid grid-cols-2 gap-2">
+            <div className="bg-white border rounded-lg px-4 py-3">
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">
+                Total Receivable
+              </p>
+              <p className="text-base font-bold text-rose-600 tabular-nums">
+                {fmtMoney(totalReceivable)}
+              </p>
+            </div>
+            <div className="bg-white border rounded-lg px-4 py-3">
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">
+                Total Payable
+              </p>
+              <p className="text-base font-bold text-amber-600 tabular-nums">
+                {fmtMoney(totalPayable)}
+              </p>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-gray-500">Total Payable:</span>
-            <span className="text-sm font-bold text-amber-600 tabular-nums">
-              {fmtMoney(totalPayable)}
-            </span>
-          </div>
-          <div className="no-print flex items-center gap-1.5 border border-gray-200 rounded-md px-2.5 py-1.5 bg-white flex-1 max-w-xs ml-auto">
-            <Search className="h-3.5 w-3.5 text-gray-400" />
+          <div className="no-print flex items-center gap-1.5 border border-gray-200 rounded-lg px-3 py-2 bg-white">
+            <Search className="h-3.5 w-3.5 text-gray-400 shrink-0" />
             <input
               value={partySearch}
               onChange={(e) => setPartySearch(e.target.value)}
@@ -633,7 +785,34 @@ function ReportView({
                     Closing: {fmtBal(closing)}
                   </span>
                 </div>
-                <table className="w-full text-[12px] border-collapse">
+                {/* The mobile/desktop split below is screen-only — print
+                    must always show the real table regardless of the
+                    device it's triggered from (a phone's own Print button
+                    included), so this overrides both sides of the split
+                    back for @media print rather than trusting how a given
+                    browser resolves `md:` during an actual print render. */}
+                <style>{`@media print {
+                  .party-ledger-mobile-cards { display: none !important; }
+                  .party-ledger-table { display: table !important; }
+                }`}</style>
+                <div className="md:hidden party-ledger-mobile-cards divide-y divide-gray-100">
+                  {ledger.rows.map((r, i) => (
+                    <PartyStatementCardBlock key={i} row={r} onOpen={() => openRow(r)} />
+                  ))}
+                  <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-t text-[10px] font-bold uppercase text-gray-500">
+                    <span>Closing Balance</span>
+                    <span
+                      className={closing > 0 ? "text-rose-600" : closing < 0 ? "text-amber-600" : "text-gray-500"}
+                    >
+                      {closing > 0
+                        ? `${fmtMoney(closing)} Dr`
+                        : closing < 0
+                          ? `${fmtMoney(-closing)} Cr`
+                          : "Settled"}
+                    </span>
+                  </div>
+                </div>
+                <table className="hidden md:table party-ledger-table w-full text-[12px] border-collapse">
                   <thead>
                     <tr className="bg-gray-50/60">
                       {[
@@ -843,6 +1022,34 @@ function StatCard({
   );
 }
 
+// Cells here are already display-formatted strings (₹1,200.00, dates, plain
+// numbers, dashes for empty) shared across every report table — this strips
+// currency/comma formatting to compare numerically when it can, and falls
+// back to plain string comparison for text columns and "—" placeholders.
+function smartCompare(a: string, b: string): number {
+  const na = parseFloat(a.replace(/[₹,]/g, ""));
+  const nb = parseFloat(b.replace(/[₹,]/g, ""));
+  if (!isNaN(na) && !isNaN(nb)) return na - nb;
+  return a.localeCompare(b);
+}
+
+// Colour cues shared by the report cards — the status column becomes a pill
+// and the summary totals get tinted by what they mean, detected from the text
+// so this stays generic across every differently-shaped report.
+const STATUS_PILL: Record<string, string> = {
+  paid: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  partial: "bg-amber-50 text-amber-700 border-amber-200",
+  unpaid: "bg-rose-50 text-rose-700 border-rose-200",
+  overdue: "bg-rose-50 text-rose-700 border-rose-200",
+};
+const isStatusValue = (v: string) => v.trim().toLowerCase() in STATUS_PILL;
+const totalTone = (k: string) => {
+  const s = k.toLowerCase();
+  if (/outstand|payable|\bdue\b|debit|payable/.test(s)) return "text-rose-600";
+  if (/collect|received/.test(s)) return "text-emerald-600";
+  return "text-gray-800";
+};
+
 function TableReport({
   label,
   cols,
@@ -854,6 +1061,25 @@ function TableReport({
   rows: string[][];
   totalRows: [string, string][];
 }) {
+  const [sortCol, setSortCol] = useState<number | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
+  const toggleSort = (i: number) => {
+    if (sortCol === i) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else {
+      setSortCol(i);
+      setSortDir("asc");
+    }
+  };
+
+  const sortedRows =
+    sortCol == null
+      ? rows
+      : [...rows].sort((a, b) => {
+        const cmp = smartCompare(a[sortCol] ?? "", b[sortCol] ?? "");
+        return sortDir === "asc" ? cmp : -cmp;
+      });
+
   if (rows.length === 0) {
     return (
       <div>
@@ -872,7 +1098,7 @@ function TableReport({
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-base font-bold text-gray-800">{label}</h2>
           <button
-            onClick={() => downloadCsv(label, cols, rows)}
+            onClick={() => downloadCsv(label, cols, sortedRows)}
             className="no-print inline-flex items-center gap-1.5 h-8 px-3 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-gray-600 hover:bg-gray-50 hover:shadow-sm transition"
           >
             <Download className="h-3.5 w-3.5" /> Export CSV
@@ -880,19 +1106,85 @@ function TableReport({
         </div>
       )}
       <div className="bg-white border border-gray-200/80 rounded-xl shadow-card overflow-hidden">
-        <div className="data-table overflow-auto max-h-[calc(100vh-300px)]">
+        {/* The mobile/desktop split below is screen-only — print must
+            always show the real table regardless of the device it's
+            triggered from (a phone's own Print button included), so this
+            overrides both sides of the split back for @media print rather
+            than trusting how a given browser resolves `md:` during an
+            actual print render. */}
+        <style>{`@media print {
+          .table-report-mobile-cards { display: none !important; }
+          .table-report-table { display: table !important; }
+        }`}</style>
+        {/* Mobile card list — this report's column count varies (up to 8+
+            for some reports) and never fits a phone; this shows every
+            column as a label:value pair per row instead, generically,
+            since this one component renders many differently-shaped
+            reports. */}
+        <div className="md:hidden table-report-mobile-cards">
+          <div className="divide-y divide-gray-100">
+            {sortedRows.map((row, ri) => (
+              <div key={ri} className="px-4 py-3">
+                {/* Identifier on the left, the report's last column (status /
+                    headline total, depending on the report) emphasised right */}
+                <div className="flex items-center justify-between gap-2 mb-2.5">
+                  <p className="font-bold text-[14px] text-gray-800 truncate leading-tight">
+                    {row[0]}
+                  </p>
+                  {cols.length > 1 &&
+                    (isStatusValue(row[row.length - 1]) ? (
+                      <span
+                        className={`shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full border ${STATUS_PILL[row[row.length - 1].trim().toLowerCase()]}`}
+                      >
+                        {row[row.length - 1]}
+                      </span>
+                    ) : (
+                      <p className="font-bold text-[13px] text-gray-800 tabular-nums shrink-0 leading-tight">
+                        {row[row.length - 1]}
+                      </p>
+                    ))}
+                </div>
+                {/* Middle columns as a tidy label/value grid instead of a
+                    wrapped run-on line */}
+                {cols.length > 2 && (
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                    {cols.slice(1, -1).map((c, i) => (
+                      <div key={c} className="min-w-0">
+                        <p className="text-[9.5px] uppercase tracking-wide text-gray-400 leading-none">
+                          {c}
+                        </p>
+                        <p className="text-[12px] text-gray-700 truncate mt-1 tabular-nums">
+                          {row[i + 1]}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="hidden md:block data-table table-report-table overflow-auto max-h-[calc(100vh-300px)]">
           <table className="w-full text-[12.5px] min-w-max">
             <thead>
               <tr>
                 {cols.map((c, i) => (
-                  <th key={c} style={{ textAlign: i > 0 ? "right" : "left" }}>
+                  <th
+                    key={c}
+                    onClick={() => toggleSort(i)}
+                    style={{ textAlign: i > 0 ? "right" : "left" }}
+                    className="cursor-pointer select-none"
+                  >
                     {c}
+                    {sortCol === i && (
+                      <span className="ml-1">{sortDir === "asc" ? "↑" : "↓"}</span>
+                    )}
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {rows.map((row, ri) => (
+              {sortedRows.map((row, ri) => (
                 <tr key={ri}>
                   {row.map((cell, ci) => (
                     <td
@@ -909,13 +1201,14 @@ function TableReport({
           </table>
         </div>
         {totalRows.length > 0 && (
-          <div className="border-t border-gray-200/80 bg-gray-50/60 px-5 py-3 flex flex-wrap items-center gap-3">
+          <div className="border-t border-gray-200/80 bg-gray-50/60 px-4 sm:px-5 py-1">
             {totalRows.map(([k, v], i) => (
-              <div key={i} className="flex items-center gap-3">
-                {i > 0 && <span className="text-gray-300">•</span>}
-                {k && <span className="text-xs font-semibold text-gray-500">{k}</span>}
-                <span className="text-gray-300">|</span>
-                <span className="text-sm font-bold text-gray-800 tabular-nums">{v}</span>
+              <div
+                key={i}
+                className={`flex items-center justify-between gap-4 py-2.5 ${i > 0 ? "border-t border-gray-100" : ""}`}
+              >
+                <span className="text-[12px] font-medium text-gray-500">{k}</span>
+                <span className={`text-[14px] font-bold tabular-nums ${totalTone(k)}`}>{v}</span>
               </div>
             ))}
           </div>

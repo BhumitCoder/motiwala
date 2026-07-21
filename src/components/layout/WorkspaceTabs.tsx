@@ -20,7 +20,7 @@ import {
   Settings,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
   PartyRepo,
@@ -31,12 +31,22 @@ import {
   PurchaseReturnRepo,
   BankRepo,
 } from "@/repositories";
+import { useRepoData } from "@/hooks/useRepoData";
 
 export function WorkspaceTabs() {
+  useRepoData();
   const { tabs, closeTab, openTab } = useWorkspace();
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const routeTitle = titleFromPath(pathname);
+
+  const tabElsRef = useRef<Record<string, HTMLDivElement | null>>({});
+  // Chrome's rapid-close trick: while the mouse stays over the strip, a
+  // closed tab's neighbors hold their exact pixel width instead of
+  // reflowing to fill the gap — so clicking the same spot repeatedly closes
+  // one tab after another without ever moving the cursor. Only cleared on
+  // mouseleave, which is when the strip is allowed to reflow to fit again.
+  const [pinnedWidths, setPinnedWidths] = useState<Record<string, number> | null>(null);
 
   useEffect(() => {
     if (!routeTitle) return;
@@ -45,30 +55,50 @@ export function WorkspaceTabs() {
 
   if (!tabs.length) return null;
 
-  // Closing the tab you're currently looking at needs to actually move you
-  // somewhere — otherwise the tab strip changes but the page underneath
-  // doesn't. Land on the last remaining tab, or the Dashboard once none are
-  // left (which then re-opens its own tab via the effect above).
+  // Closing the ACTIVE tab needs to actually move you somewhere — Chrome's
+  // rule is the adjacent tab (whichever now sits in this tab's old slot,
+  // i.e. the one that was to its right), falling back to the new last tab
+  // only when the closed tab was already the rightmost. Never just "the
+  // last tab in the whole strip" — that teleports you across open tabs.
   const handleClose = (tabId: string, tabPath: string) => {
+    const widths: Record<string, number> = { ...pinnedWidths };
+    for (const t of tabs) {
+      if (t.id === tabId) continue;
+      const el = tabElsRef.current[t.id];
+      if (el) widths[t.id] = el.getBoundingClientRect().width;
+    }
+    setPinnedWidths(widths);
+
     const wasActive = tabPath === pathname;
+    const closedIndex = tabs.findIndex((t) => t.id === tabId);
     closeTab(tabId);
     if (wasActive) {
       const remaining = tabs.filter((t) => t.id !== tabId);
-      const next = remaining[remaining.length - 1];
+      const next = remaining[Math.min(closedIndex, remaining.length - 1)];
       navigate({ to: next ? next.path : "/" });
     }
   };
 
   return (
-    <div className="hidden md:flex h-12 items-end bg-gradient-to-b from-muted to-muted/70 border-b border-border px-2 gap-1 overflow-x-auto shrink-0">
+    <div
+      className="hidden md:flex h-12 items-end bg-gradient-to-b from-muted to-muted/70 border-b border-border px-2 gap-1 overflow-x-auto shrink-0"
+      onMouseLeave={() => setPinnedWidths(null)}
+    >
       {tabs.map((tab) => {
         const active = tab.path === pathname;
         const Icon = iconForPath(tab.path);
+        const pinnedWidth = pinnedWidths?.[tab.id];
         return (
-          <div
+          <Link
             key={tab.id}
+            to={tab.path}
+            ref={(el) => {
+              tabElsRef.current[tab.id] = el as unknown as HTMLDivElement | null;
+            }}
+            style={pinnedWidth != null ? { flex: `0 0 ${pinnedWidth}px` } : undefined}
             className={cn(
-              "group relative flex items-center gap-2 h-10 pl-3 pr-1.5 rounded-t-xl text-[12.5px] cursor-pointer shrink-0 transition-all duration-150",
+              "group relative flex items-center gap-1.5 h-10 pl-2.5 pr-1 rounded-t-xl text-[12.5px] cursor-pointer transition-all duration-150 min-w-[72px] max-w-[152px]",
+              pinnedWidth != null ? "shrink-0 overflow-hidden" : "flex-1",
               active
                 ? "bg-background text-foreground font-semibold shadow-[0_-2px_8px_rgba(0,0,0,0.08)] -mb-px"
                 : "bg-transparent text-muted-foreground hover:bg-background/60 hover:text-foreground",
@@ -80,22 +110,21 @@ export function WorkspaceTabs() {
                 active ? "text-primary" : "text-muted-foreground/70 group-hover:text-foreground",
               )}
             />
-            <Link to={tab.path} className="max-w-[150px] truncate">
-              {tab.title}
-            </Link>
+            <span className="truncate flex-1 min-w-0">{tab.title}</span>
             <button
               onClick={(e) => {
                 e.preventDefault();
+                e.stopPropagation();
                 handleClose(tab.id, tab.path);
               }}
               className={cn(
-                "rounded-full p-0.5 hover:!opacity-100 hover:bg-accent transition-opacity",
+                "rounded-full p-0.5 hover:!opacity-100 hover:bg-accent transition-opacity shrink-0",
                 active ? "opacity-60" : "opacity-0 group-hover:opacity-60",
               )}
             >
               <X className="h-3 w-3" />
             </button>
-          </div>
+          </Link>
         );
       })}
     </div>

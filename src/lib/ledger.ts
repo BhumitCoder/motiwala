@@ -166,8 +166,14 @@ export function modeFlows(
       });
   }
   for (const e of expenses) {
-    if (e.paymentMode === mode)
-      list.push({ date: e.date, type: "Expense", ref: e.category, in: 0, out: e.amount });
+    if (e.paymentMode !== mode) continue;
+    // Already moved directly onto that specific bank account's stored balance
+    // (see expenses.tsx) — counting it again here would double-subtract it
+    // from the Bank page / dashboard total, which add these flows on top of
+    // the stored balances. Mirrors the sales/purchase/payment guards above.
+    // A cash expense (no bankId) is NOT on any stored balance, so it stays.
+    if (e.bankId) continue;
+    list.push({ date: e.date, type: "Expense", ref: e.category, in: 0, out: e.amount });
   }
   for (const p of payments) {
     if (p.mode !== mode) continue;

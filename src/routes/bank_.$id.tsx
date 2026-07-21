@@ -1,25 +1,56 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BankRepo, SalesRepo, PurchaseRepo, PaymentRepo, BankTxnRepo, ExpenseRepo, CompanyRepo } from "@/repositories";
 import { buildBankLedger, type BankLedgerRow } from "@/lib/ledger";
 import { fmtMoney, fmtDate } from "@/lib/format";
-import { printWithName } from "@/lib/print";
+import { printOrEscapeStandalone } from "@/lib/print";
+import { useAutoPrintFromUrl } from "@/hooks/useAutoPrintFromUrl";
+import { useRepoData } from "@/hooks/useRepoData";
 import { downloadCsv } from "@/lib/csv";
+import { downloadElementAsPdf } from "@/lib/pdf";
 import type { BankAccount } from "@/types";
-import { ArrowLeft, Printer, Download, Landmark, AlertCircle } from "lucide-react";
+import {
+  ArrowLeft,
+  Printer,
+  Download,
+  Landmark,
+  AlertCircle,
+  ArrowDownLeft,
+  ArrowUpRight,
+  Loader2,
+} from "lucide-react";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/bank_/$id")({ component: BankStatementPage });
 
+// Keeps the date range selected everywhere — across leaving to view a
+// linked sale/purchase, across switching to a different bank account
+// entirely, anything short of an actual page reload (which starts fresh
+// again).
+let dateCache: { dateFrom: string; dateTo: string } | null = null;
+
 function BankStatementPage() {
+  const _repoV = useRepoData();
   const { id } = Route.useParams();
   const navigate = useNavigate();
   const [bank, setBank] = useState<BankAccount | null | undefined>(undefined);
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  const [dateFrom, setDateFrom] = useState(() => dateCache?.dateFrom ?? "");
+  const [dateTo, setDateTo] = useState(() => dateCache?.dateTo ?? "");
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const printRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setBank(BankRepo.get(id) ?? null);
-  }, [id]);
+  }, [id, _repoV]);
+
+  useEffect(() => {
+    dateCache = { dateFrom, dateTo };
+  }, [dateFrom, dateTo]);
+
+  // Re-entry point for printOrEscapeStandalone's standalone-app escape (see
+  // lib/print.ts) — this tab opened fresh with ?print=1, so print
+  // immediately once the bank account has loaded.
+  useAutoPrintFromUrl(bank ? `Bank-${bank.name.replace(/\s+/g, "-")}` : null, !!bank);
 
   const { rows } = useMemo(() => {
     if (!bank) return { rows: [] as BankLedgerRow[] };
@@ -35,7 +66,7 @@ function BankStatementPage() {
       dateFrom,
       dateTo,
     );
-  }, [bank, dateFrom, dateTo]);
+  }, [bank, dateFrom, dateTo, _repoV]);
 
   const openRow = (e: BankLedgerRow) => {
     if (!e.docId || !e.docKind) return;
@@ -89,6 +120,22 @@ function BankStatementPage() {
     downloadCsv(`Passbook-${bank.name}`, allRows[0], allRows.slice(1));
   };
 
+  // Print's standalone-app fallback (see lib/print.ts) — the installed
+  // home-screen app can't open a print dialog, so Print saves this same
+  // passbook as a PDF instead.
+  const handleDownloadPdf = async () => {
+    if (!printRef.current || pdfBusy) return;
+    setPdfBusy(true);
+    try {
+      await downloadElementAsPdf(printRef.current, `Bank-${bank.name.replace(/\s+/g, "-")}`, "portrait");
+      toast.success("Passbook downloaded as PDF");
+    } catch {
+      toast.error("Could not generate PDF — try again once online");
+    } finally {
+      setPdfBusy(false);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-[#f5f6fa]">
       {/* Header */}
@@ -122,11 +169,12 @@ function BankStatementPage() {
             <Download className="h-4 w-4" /> Download Excel
           </button>
           <button
-            onClick={() => printWithName(`Bank-${bank.name.replace(/\s+/g, "-")}`)}
-            className="inline-flex items-center gap-1.5 h-8 px-4 bg-primary text-white rounded-md text-sm font-semibold hover:opacity-90 transition"
+            onClick={() => printOrEscapeStandalone(`Bank-${bank.name.replace(/\s+/g, "-")}`, undefined, handleDownloadPdf)}
+            disabled={!!pdfBusy}
+            className="inline-flex items-center gap-1.5 h-8 px-4 bg-primary text-white rounded-md text-sm font-semibold hover:opacity-90 transition disabled:opacity-60 disabled:cursor-not-allowed"
             title="Print, or choose 'Save as PDF' in the print dialog"
           >
-            <Printer className="h-4 w-4" /> Print / PDF
+            {pdfBusy ? (<><Loader2 className="h-4 w-4 animate-spin" /> Preparing…</>) : (<><Printer className="h-4 w-4" /> Print / PDF</>)}
           </button>
         </div>
       </div>
@@ -157,7 +205,7 @@ function BankStatementPage() {
 
       {/* Passbook (also the printable area) */}
       <div className="flex-1 overflow-auto p-5">
-        <div className="print-visible bg-white border rounded-lg shadow-sm overflow-hidden max-w-4xl mx-auto print:p-6">
+        <div ref={printRef} className="print-visible bg-white border rounded-lg shadow-sm overflow-hidden max-w-4xl mx-auto print:p-6">
           <div className="px-5 py-3 border-b flex items-center justify-between gap-3 flex-wrap">
             <div>
               <p className="text-sm font-bold text-gray-800">Bank Passbook — {bank.name}</p>
@@ -194,7 +242,76 @@ function BankStatementPage() {
               )}
             </div>
           </div>
-          <table className="w-full text-[12.5px] border-collapse">
+          {/* The mobile/desktop split below is screen-only — print must
+              always show the real table regardless of the device it's
+              triggered from (a phone's own Print button included), so this
+              overrides both sides of the split back for @media print
+              rather than trusting how a given browser resolves `md:` during
+              an actual print render. */}
+          <style>{`@media print {
+            .bank-ledger-mobile-cards { display: none !important; }
+            .bank-ledger-table { display: table !important; }
+          }`}</style>
+          {/* Mobile card list — a 6-column table doesn't fit a phone; this
+              is the same data as one tappable card per row instead. */}
+          <div className="md:hidden bank-ledger-mobile-cards">
+            {rows.length === 0 ? (
+              <div className="text-center py-14 text-gray-400">
+                No transactions in this account yet
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-100">
+                {rows.map((e, i) => {
+                  const isCredit = !!e.credit;
+                  const isDebit = !!e.debit;
+                  return (
+                    <div
+                      key={i}
+                      onClick={e.docId ? () => openRow(e) : undefined}
+                      title={e.docId ? "Open this bill" : undefined}
+                      className={`bg-white px-4 py-3 flex items-center gap-3 ${e.docId ? "cursor-pointer active:bg-gray-50" : ""}`}
+                    >
+                      <div
+                        className={`h-9 w-9 rounded-full flex items-center justify-center shrink-0 ${isCredit ? "bg-emerald-50 text-emerald-600" : isDebit ? "bg-rose-50 text-rose-600" : "bg-gray-100 text-gray-400"}`}
+                      >
+                        {isDebit ? (
+                          <ArrowUpRight className="h-4 w-4" />
+                        ) : (
+                          <ArrowDownLeft className="h-4 w-4" />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="font-semibold text-[13px] text-gray-800 truncate leading-tight">
+                            {e.type}
+                          </p>
+                          <p
+                            className={`font-bold text-[13px] tabular-nums shrink-0 leading-tight ${isDebit ? "text-rose-600" : isCredit ? "text-emerald-600" : "text-gray-800"}`}
+                          >
+                            {isDebit
+                              ? `−${fmtMoney(e.debit)}`
+                              : isCredit
+                                ? `+${fmtMoney(e.credit)}`
+                                : "—"}
+                          </p>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 mt-1">
+                          <p className="text-[11px] text-gray-400 truncate">
+                            {e.date ? fmtDate(e.date) : "—"}
+                            {e.ref ? ` · ${e.ref}` : ""}
+                          </p>
+                          <span className="text-[11px] font-semibold text-gray-500 shrink-0 tabular-nums">
+                            Bal {fmtMoney(e.balance)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <table className="hidden md:table bank-ledger-table w-full text-[12.5px] border-collapse">
             <thead>
               <tr className="bg-gray-50">
                 {["Date", "Type", "Ref #", "Debit (−)", "Credit (+)", "Balance"].map((h, i) => (

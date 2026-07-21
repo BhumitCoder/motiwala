@@ -48,6 +48,16 @@
 :root {
   --radius: 0.5rem;
 
+  /* Mobile bottom tab bar: row height + the clearance BELOW the tab row (for
+     the home-indicator gesture area), defined ONCE so the bar
+     (MobileBottomNav) and the content padding that makes room for it
+     (AppShell's <main>) can never drift apart. The client found the full
+     safe-area inset (~34px) far too much empty space under the tabs, so this
+     is a small fixed clearance — enough to keep the labels off the very edge
+     without a tall dead band. Tune this single value up/down to taste. */
+  --mobile-nav-height: 52px;
+  --mobile-nav-safe: 10px;
+
   --background: oklch(0.985 0.004 60);
   --foreground: oklch(0.22 0.02 25);
   --card: oklch(1 0 0);
@@ -138,6 +148,16 @@
   body,
   #root {
     height: 100%;
+    /* AppShell's own `<main>` (and each page's own inner overflow-auto
+       region) is the only thing that should ever scroll — the outer
+       page/body must not be independently scrollable at all. Without this,
+       mobile Safari's dynamic address bar (100vh not matching the real
+       visible viewport) or an elastic overscroll bounce could occasionally
+       let the whole page — header included, since it's normal-flow content
+       sitting above `<main>`, not actually pinned — drift with a scroll
+       gesture that was meant to only scroll the content underneath it. */
+    overflow: hidden;
+    overscroll-behavior: none;
   }
   body {
     background-color: var(--color-background);
@@ -278,6 +298,16 @@
   body {
     background: #fff !important;
   }
+  /* The screen shell locks html/body/#root to the viewport (height: 100% +
+     overflow: hidden, see @layer base) so only <main> ever scrolls. Printing
+     lays the whole document out on paper instead — left locked, a statement
+     longer than one screen clips to a single printed page. */
+  html,
+  body,
+  #root {
+    height: auto !important;
+    overflow: visible !important;
+  }
   body * {
     visibility: hidden !important;
   }
@@ -313,6 +343,18 @@
   }
   .no-print {
     display: none !important;
+  }
+  /* useFitScale's mobile "shrink to fit" wrapper must not survive into
+     print — a transform on an ancestor creates a new containing block for
+     .print-visible's position:absolute, which would position the printed
+     page relative to this wrapper's (scaled, on-screen-only) box instead of
+     the real page. Verified directly with an isolated Puppeteer check
+     across the PDF pipeline's own render and native print triggered from a
+     narrow phone viewport — this override wins in both. */
+  .preview-fit-scale {
+    transform: none !important;
+    width: auto !important;
+    height: auto !important;
   }
 }
 .print-area {

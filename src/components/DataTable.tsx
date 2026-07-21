@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Inbox } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePagination, PaginationBar } from "@/components/Pagination";
 
@@ -105,7 +106,7 @@ export function DataTable<T>({
         ref={tableRef}
         tabIndex={0}
         onKeyDown={onKey}
-        className="data-table flex-1 overflow-auto outline-none"
+        className="data-table relative flex-1 overflow-auto outline-none"
       >
         <table className="w-full min-w-max text-[13px]">
           <thead>
@@ -126,13 +127,7 @@ export function DataTable<T>({
             </tr>
           </thead>
           <tbody>
-            {paged.length === 0 ? (
-              <tr>
-                <td colSpan={columns.length} className="text-center py-8 text-muted-foreground">
-                  {emptyMessage ?? "No data. Press N to add."}
-                </td>
-              </tr>
-            ) : (
+            {paged.length === 0 ? null : (
               paged.map((row, i) => (
                 <tr
                   key={rowKey(row)}
@@ -155,6 +150,16 @@ export function DataTable<T>({
           </tbody>
           {footer && paged.length > 0 && <tfoot>{footer}</tfoot>}
         </table>
+        {paged.length === 0 && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center pointer-events-none">
+            <div className="h-11 w-11 rounded-full bg-gray-100 flex items-center justify-center">
+              <Inbox className="h-5 w-5 text-gray-300" />
+            </div>
+            <p className="text-[13px] font-medium text-gray-400">
+              {emptyMessage ?? "No data. Press N to add."}
+            </p>
+          </div>
+        )}
       </div>
       <PaginationBar
         page={pg.page}

@@ -11,11 +11,16 @@ import {
 } from "@/repositories";
 import { buildPartyStatement, type PartyStatementRow } from "@/lib/ledger";
 import { fmtMoney, fmtDate } from "@/lib/format";
-import { printWithName } from "@/lib/print";
+import { printOrEscapeStandalone } from "@/lib/print";
+import { useAutoPrintFromUrl } from "@/hooks/useAutoPrintFromUrl";
+import { useRepoData } from "@/hooks/useRepoData";
 import { downloadXlsx } from "@/lib/xlsx";
-import { downloadElementAsPdf, shareElementAsPdf } from "@/lib/pdf";
+import { downloadElementAsPdf } from "@/lib/pdf";
+import { useShareablePdf } from "@/hooks/useShareablePdf";
+import { sendElementViaWhatsApp } from "@/lib/whatsappSend";
 import { partyStatementSheet } from "@/lib/partySheet";
 import { PartyDialog } from "./parties";
+import { usePermissions } from "@/hooks/usePermissions";
 import type { Party } from "@/types";
 import { toast } from "sonner";
 import {
@@ -31,6 +36,10 @@ import {
   CheckCircle2,
   FileText,
   Rows3,
+  MessageCircle,
+  Calendar,
+  X,
+  Loader2,
   type LucideIcon,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -44,15 +53,24 @@ export const Route = createFileRoute("/parties_/$id")({ component: PartyStatemen
 
 type LedgerRow = PartyStatementRow;
 
+// Keeps the date range selected everywhere — across leaving to view a
+// linked sale/purchase/return, across switching to a different party
+// entirely, anything short of an actual page reload (which starts fresh
+// again).
+let dateCache: { dateFrom: string; dateTo: string } | null = null;
+
 function PartyStatementPage() {
+  const _repoV = useRepoData();
   const { id } = Route.useParams();
   const navigate = useNavigate();
+  const { isOwner, canEdit } = usePermissions();
+  const editAllowed = isOwner || canEdit("masterData");
   const [party, setParty] = useState<Party | null | undefined>(undefined);
   const [editOpen, setEditOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-  const [pdfBusy, setPdfBusy] = useState<"download" | "share" | null>(null);
+  const [dateFrom, setDateFrom] = useState(() => dateCache?.dateFrom ?? "");
+  const [dateTo, setDateTo] = useState(() => dateCache?.dateTo ?? "");
+  const [pdfBusy, setPdfBusy] = useState<"download" | "share" | "whatsapp" | null>(null);
   const printRef = useRef<HTMLDivElement>(null);
   const simpleLedgerRef = useRef<HTMLDivElement>(null);
   // Which of the two printable layouts is currently wired up to become the
@@ -61,8 +79,10 @@ function PartyStatementPage() {
   // Doesn't affect normal on-screen viewing (the existing statement is
   // always visible on screen regardless — only the print-time class moves).
   const [ledgerFormat, setLedgerFormat] = useState<"full" | "simple">("full");
-  const [formatPrompt, setFormatPrompt] = useState<null | "print" | "download" | "share">(null);
-  const pendingActionRef = useRef<null | "print" | "download" | "share">(null);
+  const [formatPrompt, setFormatPrompt] = useState<null | "print" | "download" | "share" | "whatsapp">(
+    null,
+  );
+  const pendingActionRef = useRef<null | "print" | "download" | "share" | "whatsapp">(null);
   // Fires the pending action below — a separate counter, not `ledgerFormat`
   // itself, because if the user picks the format that's already active
   // (e.g. "Full Detail Ledger" while ledgerFormat is already "full", the
@@ -72,7 +92,11 @@ function PartyStatementPage() {
 
   useEffect(() => {
     setParty(PartyRepo.get(id) ?? null);
-  }, [id, refreshKey]);
+  }, [id, refreshKey, _repoV]);
+
+  useEffect(() => {
+    dateCache = { dateFrom, dateTo };
+  }, [dateFrom, dateTo]);
 
   const { rows } = useMemo(() => {
     if (!party) return { rows: [] as LedgerRow[], fullBalance: 0 };
@@ -88,7 +112,7 @@ function PartyStatementPage() {
       dateFrom,
       dateTo,
     );
-  }, [party, refreshKey, dateFrom, dateTo]);
+  }, [party, refreshKey, dateFrom, dateTo, _repoV]);
 
   // The plain Date/Particulars/Qty/Credit/Debit/Balance ledger the client
   // asked for, alongside the existing detailed statement — not replacing it.
@@ -142,11 +166,21 @@ function PartyStatementPage() {
 
   const pdfName = () => `Statement-${(party?.name ?? "Party").replace(/\s+/g, "-")}`;
 
+  // Re-entry point for printOrEscapeStandalone's standalone-app escape (see
+  // lib/print.ts) — this tab opened fresh with ?print=1, so print immediately
+  // once the party has loaded rather than making the user pick a format
+  // again; always uses the "full" statement (this page's own default) since
+  // whatever format the original tap chose isn't carried across tabs.
+  useAutoPrintFromUrl(party ? pdfName() : null, !!party);
+
   const activePrintEl = () => (ledgerFormat === "simple" ? simpleLedgerRef.current : printRef.current);
+
+  const { shareReady, share, resetShare } = useShareablePdf("Statement");
 
   const handleDownloadPdf = async () => {
     const el = activePrintEl();
     if (!el || pdfBusy) return;
+    resetShare();
     setPdfBusy("download");
     try {
       await downloadElementAsPdf(el, pdfName(), "landscape");
@@ -163,12 +197,30 @@ function PartyStatementPage() {
     if (!el || pdfBusy) return;
     setPdfBusy("share");
     try {
-      const result = await shareElementAsPdf(el, pdfName(), "landscape");
-      if (result === "shared") toast.success("Statement shared");
-      else if (result === "downloaded")
-        toast.info("Sharing isn't supported here — PDF downloaded instead");
+      await share(el, pdfName(), "landscape");
     } catch {
       toast.error("Could not share statement — try Download PDF instead");
+    } finally {
+      setPdfBusy(null);
+    }
+  };
+
+  const handleSendWhatsApp = async () => {
+    const el = activePrintEl();
+    if (!el || pdfBusy || !party) return;
+    setPdfBusy("whatsapp");
+    try {
+      const company = CompanyRepo.get();
+      await sendElementViaWhatsApp({
+        el,
+        phone: party.phone,
+        message: `Hi ${party.name}, here's your account statement${company ? ` from ${company.name}` : ""}.`,
+        fileName: pdfName(),
+        orientation: "landscape",
+      });
+      toast.success("Statement sent on WhatsApp");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not send via WhatsApp");
     } finally {
       setPdfBusy(null);
     }
@@ -185,7 +237,7 @@ function PartyStatementPage() {
   // calls guarded against `party` being null) so this hook always runs in
   // the same position on every render — conditionally calling a hook after
   // an early return breaks the Rules of Hooks.
-  const promptFormat = (action: "print" | "download" | "share") => setFormatPrompt(action);
+  const promptFormat = (action: "print" | "download" | "share" | "whatsapp") => setFormatPrompt(action);
 
   const chooseFormat = (fmt: "full" | "simple") => {
     pendingActionRef.current = formatPrompt;
@@ -198,8 +250,9 @@ function PartyStatementPage() {
     const action = pendingActionRef.current;
     if (!action) return;
     pendingActionRef.current = null;
-    if (action === "print") printWithName(pdfName());
+    if (action === "print") printOrEscapeStandalone(pdfName(), undefined, handleDownloadPdf);
     else if (action === "download") handleDownloadPdf();
+    else if (action === "whatsapp") handleSendWhatsApp();
     else handleShare();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [actionTrigger]);
@@ -262,34 +315,48 @@ function PartyStatementPage() {
   return (
     <div className="flex flex-col h-full bg-[#f5f6fa]">
       {/* Header */}
-      <div className="no-print bg-white border-b px-5 py-3 flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <button
-            onClick={() => navigate({ to: "/parties" })}
-            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 hover:border-gray-300 flex items-center justify-center text-gray-600 transition shadow-sm"
-            title="Back to Parties"
-          >
-            <ArrowLeft className="h-4 w-4" />
-          </button>
-          <div className="h-8 w-8 shrink-0 rounded-full bg-primary-soft text-primary flex items-center justify-center font-bold text-[13px] uppercase">
-            {party.name.trim().charAt(0) || "?"}
+      <div className="no-print bg-white border-b px-5 py-3 flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <button
+              onClick={() => navigate({ to: "/parties" })}
+              className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 hover:border-gray-300 flex items-center justify-center text-gray-600 transition shadow-sm"
+              title="Back to Parties"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </button>
+            <div className="h-8 w-8 shrink-0 rounded-full bg-primary-soft text-primary flex items-center justify-center font-bold text-[13px] uppercase">
+              {party.name.trim().charAt(0) || "?"}
+            </div>
+            <div className="min-w-0">
+              <h1 className="text-[15px] font-bold text-gray-800 truncate leading-tight">
+                {party.name}
+              </h1>
+              <p className="text-[11px] text-gray-400 flex items-center gap-1 whitespace-nowrap">
+                {party.phone ? (
+                  <>
+                    <Phone className="h-3 w-3" /> {party.phone}
+                  </>
+                ) : (
+                  "No phone saved"
+                )}
+              </p>
+            </div>
           </div>
-          <div className="min-w-0">
-            <h1 className="text-[15px] font-bold text-gray-800 truncate leading-tight">
-              {party.name}
-            </h1>
-            <p className="text-[11px] text-gray-400 flex items-center gap-1 whitespace-nowrap">
-              {party.phone ? (
-                <>
-                  <Phone className="h-3 w-3" /> {party.phone}
-                </>
-              ) : (
-                "No phone saved"
-              )}
-            </p>
-          </div>
+          {editAllowed && (
+            <button
+              onClick={() => setEditOpen(true)}
+              className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition"
+              title="Edit party"
+            >
+              <Pencil className="h-4 w-4" />
+            </button>
+          )}
         </div>
-        <div className="flex items-center gap-2 ml-auto">
+
+        {/* Balance summary — its own row, evenly split, instead of three
+            fixed-width cards competing with the action buttons for space. */}
+        <div className="grid grid-cols-3 gap-2">
           <StatementCard icon={Receipt} label="Total Billed" value={totalBilled} tone="gray" />
           <StatementCard icon={CheckCircle2} label="Received / Paid" value={totalReceived} tone="emerald" />
           <StatementCard
@@ -298,13 +365,10 @@ function PartyStatementPage() {
             value={Math.abs(balance)}
             tone={balance > 0 ? "rose" : balance < 0 ? "amber" : "emerald"}
           />
-          <button
-            onClick={() => setEditOpen(true)}
-            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition"
-            title="Edit party"
-          >
-            <Pencil className="h-4 w-4" />
-          </button>
+        </div>
+
+        {/* Export/share actions */}
+        <div className="flex items-center gap-2">
           <button
             onClick={downloadExcel}
             className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition"
@@ -321,19 +385,32 @@ function PartyStatementPage() {
             <FileDown className="h-4 w-4" />
           </button>
           <button
-            onClick={() => promptFormat("share")}
+            // Once a PDF is already prepared and waiting for confirmation
+            // (shareReady), this tap must go straight to handleShare() — a
+            // direct, fresh click — rather than back through the format
+            // modal, or the share sheet loses the user gesture it needs.
+            onClick={() => (shareReady ? handleShare() : promptFormat("share"))}
             disabled={pdfBusy !== null}
-            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50"
-            title="Share statement PDF"
+            className={`h-8 w-8 shrink-0 rounded-md border bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50 ${shareReady ? "border-primary ring-2 ring-primary animate-pulse" : "border-gray-200"}`}
+            title={shareReady ? "PDF ready — tap again to share" : "Share statement PDF"}
           >
             <Share2 className="h-4 w-4" />
           </button>
           <button
+            onClick={() => promptFormat("whatsapp")}
+            disabled={pdfBusy !== null}
+            className="h-8 w-8 shrink-0 rounded-md border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 flex items-center justify-center transition disabled:opacity-50"
+            title="Send statement on WhatsApp"
+          >
+            <MessageCircle className="h-4 w-4" />
+          </button>
+          <button
             onClick={() => promptFormat("print")}
-            className="inline-flex items-center gap-1.5 h-8 px-3 bg-primary text-white rounded-md text-sm font-semibold hover:opacity-90 transition"
+            disabled={!!pdfBusy}
+            className="flex-1 inline-flex items-center justify-center gap-1.5 h-8 px-3 bg-primary text-white rounded-md text-sm font-semibold hover:opacity-90 transition disabled:opacity-60 disabled:cursor-not-allowed"
             title="Print"
           >
-            <Printer className="h-4 w-4" /> Print
+            {pdfBusy ? (<><Loader2 className="h-4 w-4 animate-spin" /> Preparing…</>) : (<><Printer className="h-4 w-4" /> Print</>)}
           </button>
         </div>
       </div>
@@ -356,44 +433,108 @@ function PartyStatementPage() {
           {ledgerFormat === "full" && (
             <style>{`@media print { @page { size: A4 landscape; margin: 0; } }`}</style>
           )}
-          <div className="px-5 py-3 border-b flex items-center justify-between gap-3 flex-wrap">
+          <div className="px-5 py-3 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
             <p className="text-sm font-bold text-gray-800">Party Statement — {party.name}</p>
+            {/* Balance intentionally NOT repeated here — the "They owe you" /
+                summary box above already shows it, and the statement's own
+                Closing Balance row shows it at the bottom. */}
             <p className="text-[11px] text-gray-400">
-              {CompanyRepo.get().name} · Generated {fmtDate(new Date().toISOString())} · Balance:{" "}
-              {fmtMoney(Math.abs(balance))}{" "}
-              {balance > 0 ? "receivable" : balance < 0 ? "payable" : ""}
+              {CompanyRepo.get().name} · Generated {fmtDate(new Date().toISOString())}
             </p>
             </div>
-            <div className="no-print flex items-center gap-1.5 text-xs text-gray-500">
-              <span>From</span>
-              <input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-                className="border border-gray-200 rounded-md text-xs px-2 py-1 bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
-              />
-              <span>To</span>
-              <input
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-                className="border border-gray-200 rounded-md text-xs px-2 py-1 bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
-              />
+            <div className="no-print flex items-center gap-1.5 h-9 pl-3 pr-2.5 rounded-lg border border-gray-200 bg-gray-50/60 w-full sm:w-auto sm:shrink-0">
+              <Calendar className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+              {/* iOS Safari renders an empty type="date" input as literally
+                  blank — no "dd/mm/yyyy"-style hint the way desktop browsers
+                  show one — so a cleared/unset date here just looks broken.
+                  This label sits on top (pointer-events-none, so the tap
+                  still opens the real native picker underneath) only while
+                  the value is empty. */}
+              <div className="relative flex-1 sm:flex-none sm:w-[104px] min-w-0">
+                {!dateFrom && (
+                  <span className="absolute inset-0 flex items-center text-xs text-gray-400 pointer-events-none">
+                    From
+                  </span>
+                )}
+                <input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  className="w-full bg-transparent text-xs text-gray-700 focus:outline-none"
+                />
+              </div>
+              <span className="text-gray-300 text-xs">–</span>
+              <div className="relative flex-1 sm:flex-none sm:w-[104px] min-w-0">
+                {!dateTo && (
+                  <span className="absolute inset-0 flex items-center text-xs text-gray-400 pointer-events-none">
+                    To
+                  </span>
+                )}
+                <input
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                  className="w-full bg-transparent text-xs text-gray-700 focus:outline-none"
+                />
+              </div>
               {(dateFrom || dateTo) && (
                 <button
                   onClick={() => {
                     setDateFrom("");
                     setDateTo("");
                   }}
-                  className="text-gray-400 hover:text-gray-600 font-semibold px-1"
+                  className="text-gray-400 hover:text-gray-600 transition shrink-0"
+                  title="Clear date range"
                 >
-                  ✕
+                  <X className="h-3.5 w-3.5" />
                 </button>
               )}
             </div>
           </div>
-          <div className="overflow-x-auto rounded-b-lg">
+          {/* The mobile/desktop split below is screen-only — print must
+              always show the real table regardless of the device it's
+              triggered from (a phone's own Print button included), so this
+              overrides both sides of the split back for @media print
+              rather than trusting how a given browser resolves `md:` during
+              an actual print render. */}
+          <style>{`@media print {
+            .party-statement-mobile-cards { display: none !important; }
+            .party-statement-table { display: block !important; }
+          }`}</style>
+          {/* Mobile card list — a 9-column table doesn't fit a phone; this
+              is the same statement as one tappable card per transaction
+              instead (item-level breakdown is left for the full bill, one
+              tap away). */}
+          <div className="md:hidden party-statement-mobile-cards">
+            {rows.length === 0 ? (
+              <div className="text-center py-14 text-gray-400">
+                No transactions with this party yet
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-100">
+                {rows.map((e, i) => (
+                  <PartyStatementCardBlock key={i} row={e} onOpen={() => openRow(e)} />
+                ))}
+              </div>
+            )}
+            {rows.length > 0 && (
+              <div className="flex items-center justify-between px-4 py-3 bg-gray-50 border-t text-xs font-bold uppercase text-gray-500">
+                <span>Closing Balance</span>
+                <span
+                  className={balance > 0 ? "text-rose-600" : balance < 0 ? "text-amber-600" : "text-gray-500"}
+                >
+                  {balance > 0
+                    ? `${fmtMoney(balance)} Dr`
+                    : balance < 0
+                      ? `${fmtMoney(-balance)} Cr`
+                      : "Settled"}
+                </span>
+              </div>
+            )}
+          </div>
+
+          <div className="hidden md:block overflow-x-auto rounded-b-lg party-statement-table">
             <table className="w-full text-[12px] border-collapse min-w-[980px]">
               <thead>
                 <tr className="bg-gray-50">
@@ -536,7 +677,8 @@ function PartyStatementPage() {
           <DialogHeader>
             <DialogTitle>Choose a ledger format</DialogTitle>
             <DialogDescription>
-              Which layout should this {formatPrompt ?? "action"} use?
+              Which layout should this{" "}
+              {formatPrompt === "whatsapp" ? "WhatsApp message" : (formatPrompt ?? "action")} use?
             </DialogDescription>
           </DialogHeader>
           <div className="grid grid-cols-1 gap-2.5">
@@ -599,15 +741,15 @@ function StatementCard({
 }) {
   const t = STATEMENT_TONES[tone];
   return (
-    <div className="shrink-0 flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border border-gray-100 bg-white">
-      <div className={`h-8 w-8 rounded-md flex items-center justify-center shrink-0 ${t.bg} ${t.text}`}>
+    <div className="flex items-center gap-1.5 sm:gap-2.5 px-2 sm:px-3.5 py-2 sm:py-2.5 rounded-lg border border-gray-100 bg-white min-w-0">
+      <div className={`hidden sm:flex h-8 w-8 rounded-md items-center justify-center shrink-0 ${t.bg} ${t.text}`}>
         <Icon className="h-4 w-4" />
       </div>
       <div className="min-w-0">
-        <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wide mb-0.5 whitespace-nowrap">
+        <p className="text-[9px] sm:text-[10px] text-gray-400 font-medium uppercase tracking-wide mb-0.5 leading-tight">
           {label}
         </p>
-        <p className={`text-[14px] font-bold tabular-nums whitespace-nowrap ${t.text}`}>
+        <p className={`text-[12px] sm:text-[14px] font-bold tabular-nums truncate ${t.text}`}>
           {fmtMoney(value)}
         </p>
       </div>
@@ -731,5 +873,108 @@ export function PartyStatementRowBlock({
         </tr>
       )}
     </>
+  );
+}
+
+/** Mobile-card counterpart to PartyStatementRowBlock, used the same way in
+ * both the Party Statement page and the Reports page's Party Ledger report
+ * — one card per transaction row instead of a 9-column table that doesn't
+ * fit a phone. The nested item-breakdown table PartyStatementRowBlock shows
+ * per transaction is left out here; tapping the card opens the full
+ * bill/return where that detail is always available. */
+export function PartyStatementCardBlock({
+  row: e,
+  onOpen,
+}: {
+  row: PartyStatementRow;
+  onOpen: () => void;
+}) {
+  const isBalanceRow = e.type === "Beginning Balance" || e.type === "Balance b/f";
+  const balanceClass =
+    e.balance > 0 ? "text-rose-600" : e.balance < 0 ? "text-amber-600" : "text-gray-400";
+  const balanceText =
+    e.balance > 0
+      ? `${fmtMoney(e.balance)} Dr`
+      : e.balance < 0
+        ? `${fmtMoney(-e.balance)} Cr`
+        : "Settled";
+
+  // Opening / brought-forward marker: a compact muted strip (label + running
+  // balance) rather than a full transaction card — it has no bill, date, or
+  // amounts to show, so the old full-card layout left a stray "· —" line.
+  if (isBalanceRow) {
+    return (
+      <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50/70">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+          {e.type}
+        </span>
+        <span className={`text-xs font-semibold tabular-nums ${balanceClass}`}>{balanceText}</span>
+      </div>
+    );
+  }
+
+  const meta = [e.date ? fmtDate(e.date) : null, e.ref && e.ref !== "—" ? `#${e.ref}` : null]
+    .filter(Boolean)
+    .join("  ·  ");
+
+  return (
+    <div
+      onClick={e.docId ? onOpen : undefined}
+      className={`px-4 py-3 ${e.docId ? "cursor-pointer active:bg-gray-50" : ""}`}
+    >
+      {/* Header: transaction type + date/ref, and the status pill */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-semibold text-gray-800 truncate leading-tight">{e.type}</p>
+          {meta && <p className="text-[11px] text-gray-400 mt-0.5 truncate">{meta}</p>}
+        </div>
+        {e.status && (
+          <span
+            className={`shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
+              e.status === "Paid"
+                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                : e.status === "Partial"
+                  ? "bg-amber-50 text-amber-700 border-amber-200"
+                  : "bg-rose-50 text-rose-700 border-rose-200"
+            }`}
+          >
+            {e.status}
+          </span>
+        )}
+      </div>
+      {/* Amounts: labeled columns on the left, running balance emphasised on the right */}
+      <div className="flex items-end justify-between gap-3 mt-2.5">
+        <div className="flex gap-5">
+          {!!e.total && (
+            <div className="min-w-0">
+              <p className="text-[9.5px] uppercase tracking-wide text-gray-400 leading-none mb-1">
+                Total
+              </p>
+              <p className="text-[13px] font-medium tabular-nums text-gray-700 leading-none">
+                {fmtMoney(e.total)}
+              </p>
+            </div>
+          )}
+          {!!e.receivedOrPaid && (
+            <div className="min-w-0">
+              <p className="text-[9.5px] uppercase tracking-wide text-gray-400 leading-none mb-1">
+                Received / Paid
+              </p>
+              <p className="text-[13px] font-medium tabular-nums text-emerald-600 leading-none">
+                {fmtMoney(e.receivedOrPaid)}
+              </p>
+            </div>
+          )}
+        </div>
+        <div className="text-right shrink-0">
+          <p className="text-[9.5px] uppercase tracking-wide text-gray-400 leading-none mb-1">
+            Balance
+          </p>
+          <p className={`text-[13px] font-bold tabular-nums leading-none ${balanceClass}`}>
+            {balanceText}
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }

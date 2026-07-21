@@ -35,6 +35,26 @@ async function normalizeCatastrophicSsrResponse(response: Response): Promise<Res
   });
 }
 
+/**
+ * The HTML document references hash-named JS chunks that change every deploy.
+ * If a browser caches the document, it keeps requesting chunk hashes that the
+ * next deploy purged → "Importing a module script failed" (worst on Safari,
+ * which caches aggressively). Force the document to always revalidate; the
+ * hashed chunks/assets are unaffected (they carry their own immutable caching
+ * and are served straight off Vercel's CDN, not through this handler).
+ */
+function withDocumentNoCache(response: Response): Response {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("text/html")) return response;
+  const headers = new Headers(response.headers);
+  headers.set("Cache-Control", "no-cache, must-revalidate");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 function isH3SwallowedErrorBody(body: string): boolean {
   try {
     const payload = JSON.parse(body) as { unhandled?: unknown; message?: unknown };
@@ -52,7 +72,8 @@ export default {
       try {
         const handler = await getServerEntry();
         const response = await handler.fetch(request, env, ctx);
-        return await normalizeCatastrophicSsrResponse(response);
+        const normalized = await normalizeCatastrophicSsrResponse(response);
+        return withDocumentNoCache(normalized);
       } catch (error) {
         console.error(error);
         return new Response(renderErrorPage(), {

@@ -2,7 +2,17 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable, type Column } from "@/components/DataTable";
-import { ItemRepo, StockAdjustmentRepo } from "@/repositories";
+import { usePagination } from "@/components/Pagination";
+import { useAutoFocusOnDesktop } from "@/hooks/use-mobile";
+import {
+  ItemRepo,
+  StockAdjustmentRepo,
+  SalesRepo,
+  PurchaseRepo,
+  SaleReturnRepo,
+  PurchaseReturnRepo,
+} from "@/repositories";
+import { useRepoData } from "@/hooks/useRepoData";
 import { newBatch, commitBatch } from "@/repositories/base";
 import type { Item } from "@/types";
 import { Button } from "@/components/ui/button";
@@ -10,7 +20,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Field } from "@/components/Field";
 import { NumField } from "@/components/NumInput";
 import { fmtMoney, today } from "@/lib/format";
-import { downloadCsv, parseCsv } from "@/lib/csv";
+import { downloadCsv } from "@/lib/csv";
+import { parseImportFile, normalizeHeader } from "@/lib/sheetImport";
 import {
   Plus,
   Search,
@@ -23,6 +34,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { toast } from "sonner";
+import { usePermissions } from "@/hooks/usePermissions";
 
 /** Bulk import/export columns — kept in lockstep with the New/Edit Item form
  * fields (Name, Category, Purchase/Sale/Wholesale Price, Min/Opening Stock).
@@ -60,6 +72,11 @@ export const Route = createFileRoute("/items")({ component: ItemsPage });
 
 function ItemsPage() {
   const navigate = useNavigate();
+  const searchRef = useRef<HTMLInputElement>(null);
+  useAutoFocusOnDesktop(searchRef);
+  const { isOwner, canEdit, canDelete } = usePermissions();
+  const editAllowed = isOwner || canEdit("masterData");
+  const deleteAllowed = isOwner || canDelete("masterData");
   const [rows, setRows] = useState<Item[]>([]);
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
@@ -69,7 +86,8 @@ function ItemsPage() {
   const [bulkEditOpen, setBulkEditOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const refresh = () => setRows(ItemRepo.all());
-  useEffect(refresh, []);
+  const _repoV = useRepoData();
+  useEffect(refresh, [_repoV]);
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
@@ -95,6 +113,8 @@ function ItemsPage() {
       r.barcode?.includes(s)
     );
   });
+
+  const pg = usePagination(filtered);
 
   const allFilteredSelected = filtered.length > 0 && filtered.every((r) => selectedIds.has(r.id));
   const toggleAllFiltered = () => {
@@ -185,27 +205,31 @@ function ItemsPage() {
           >
             <History className="h-3.5 w-3.5" />
           </button>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setEdit(r);
-              setOpen(true);
-            }}
-            className="p-1 rounded hover:bg-blue-50 text-gray-400 hover:text-blue-600 transition"
-            title="Edit item"
-          >
-            <Pencil className="h-3.5 w-3.5" />
-          </button>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setAdjustItem(r);
-            }}
-            className="p-1 rounded hover:bg-blue-50 text-gray-400 hover:text-blue-600 transition"
-            title="Adjust stock (damage, counting correction…)"
-          >
-            <ArrowUpDown className="h-3.5 w-3.5" />
-          </button>
+          {editAllowed && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setEdit(r);
+                setOpen(true);
+              }}
+              className="p-1 rounded hover:bg-blue-50 text-gray-400 hover:text-blue-600 transition"
+              title="Edit item"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {editAllowed && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setAdjustItem(r);
+              }}
+              className="p-1 rounded hover:bg-blue-50 text-gray-400 hover:text-blue-600 transition"
+              title="Adjust stock (damage, counting correction…)"
+            >
+              <ArrowUpDown className="h-3.5 w-3.5" />
+            </button>
+          )}
         </span>
       ),
     },
@@ -219,41 +243,51 @@ function ItemsPage() {
         icon={<Package className="h-5 w-5" />}
         actions={
           <>
-            <div className="relative w-44 lg:w-56">
+            <div className="relative w-full sm:w-44 lg:w-56">
               <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
-                autoFocus
+                ref={searchRef}
                 placeholder="Search items by name..."
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
-                className="w-full h-8 pl-8 pr-3 border border-gray-200 rounded-md text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
+                className="w-full h-8 pl-8 pr-3 border border-gray-200 rounded-md text-base md:text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
               />
             </div>
+            {/* Bulk import/export are desktop power-user actions — hidden
+                entirely on mobile instead of just losing their label, so the
+                header's one remaining button (New Item) gets a clean row of
+                its own instead of three cramped icon buttons competing for
+                space. */}
             <Button
               size="sm"
               variant="outline"
               onClick={() => downloadCsv("items", [...EXPORT_COLUMNS], rows.map(itemToBulkRow))}
               title="Export CSV"
+              className="hidden sm:inline-flex"
             >
-              <Download className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Export CSV</span>
+              <Download className="h-3.5 w-3.5" /> Export CSV
             </Button>
             <Button
               size="sm"
               variant="outline"
               onClick={() => setBulkOpen(true)}
               title="Bulk Import"
+              className="hidden sm:inline-flex"
             >
-              <Upload className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Bulk Import</span>
+              <Upload className="h-3.5 w-3.5" /> Bulk Import
             </Button>
-            <Button
-              size="sm"
-              onClick={() => {
-                setEdit(null);
-                setOpen(true);
-              }}
-            >
-              <Plus className="h-3.5 w-3.5" /> New Item
-            </Button>
+            {editAllowed && (
+              <Button
+                size="sm"
+                onClick={() => {
+                  setEdit(null);
+                  setOpen(true);
+                }}
+                className="w-full sm:w-auto"
+              >
+                <Plus className="h-3.5 w-3.5" /> New Item
+              </Button>
+            )}
           </>
         }
       />
@@ -285,7 +319,89 @@ function ItemsPage() {
           </div>
         </div>
       )}
-      <div className="p-6 flex-1 min-h-0 flex">
+      {/* Mobile card list — a table of 6 columns doesn't fit a phone; this
+          is the same data as one tappable card per item instead. */}
+      <div className="md:hidden flex-1 overflow-auto">
+        {filtered.length === 0 ? (
+          <div className="text-center py-16 text-gray-400">
+            <Package className="h-10 w-10 mx-auto mb-3 text-gray-200" />
+            <p className="font-medium">No items found</p>
+            <p className="text-xs mt-1">Try adjusting your search or add a new item</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-100">
+            {pg.paged.map((r) => {
+              const low = (r.minStock != null && r.stock <= r.minStock) || r.stock < 0;
+              return (
+                <div
+                  key={r.id}
+                  onClick={() => navigate({ to: "/items/$id", params: { id: r.id } })}
+                  className="bg-white p-4 active:bg-gray-50"
+                >
+                  <div className="flex items-start justify-between gap-3 mb-1.5">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-gray-800 truncate">{r.name}</p>
+                      <p className="text-xs text-gray-400 mt-0.5 truncate">
+                        {r.category ?? "No category"}
+                      </p>
+                    </div>
+                    <p className="font-bold text-gray-800 tabular-nums shrink-0">
+                      {fmtMoney(r.salePrice)}
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span
+                      className={`text-xs font-semibold ${low ? "text-warning" : "text-gray-500"}`}
+                    >
+                      {r.stock} {r.unit} in stock
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigate({ to: "/items/$id", params: { id: r.id } });
+                        }}
+                        className="p-1.5 rounded hover:bg-blue-50 text-gray-400 hover:text-blue-600 transition"
+                        title="View details & history"
+                      >
+                        <History className="h-3.5 w-3.5" />
+                      </button>
+                      {editAllowed && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEdit(r);
+                            setOpen(true);
+                          }}
+                          className="p-1.5 rounded hover:bg-blue-50 text-gray-400 hover:text-blue-600 transition"
+                          title="Edit item"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                      {editAllowed && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setAdjustItem(r);
+                          }}
+                          className="p-1.5 rounded hover:bg-blue-50 text-gray-400 hover:text-blue-600 transition"
+                          title="Adjust stock (damage, counting correction…)"
+                        >
+                          <ArrowUpDown className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Table (desktop) */}
+      <div className="hidden md:flex flex-1 min-h-0 p-6">
         <DataTable
           columns={columns}
           rows={filtered}
@@ -293,6 +409,28 @@ function ItemsPage() {
           activateOnClick
           onRowActivate={(r) => navigate({ to: "/items/$id", params: { id: r.id } })}
           onDelete={(r) => {
+            if (!deleteAllowed) {
+              toast.error("You don't have permission to delete items");
+              return;
+            }
+            // An item that still appears on any bill/return can't be safely
+            // removed: its stock movements would orphan (Inventory & Stock
+            // reports drop it silently), its history page would 404, and
+            // editing/deleting one of those old bills later would skip the
+            // stock reversal for it entirely. Block it — same protection
+            // parties and payees already have.
+            const onDoc =
+              SalesRepo.all().some((i) => i.lineItems.some((l) => l.itemId === r.id)) ||
+              PurchaseRepo.all().some((i) => i.lineItems.some((l) => l.itemId === r.id)) ||
+              SaleReturnRepo.all().some((i) => i.lineItems.some((l) => l.itemId === r.id)) ||
+              PurchaseReturnRepo.all().some((i) => i.lineItems.some((l) => l.itemId === r.id)) ||
+              StockAdjustmentRepo.all().some((a) => a.itemId === r.id);
+            if (onDoc) {
+              toast.error(
+                `Can't delete "${r.name}" — it's used on bills, returns or stock adjustments. Deleting it would break stock and profit reports for those records.`,
+              );
+              return;
+            }
             if (confirm(`Delete ${r.name}?`)) {
               ItemRepo.remove(r.id);
               refresh();
@@ -333,35 +471,44 @@ export function StockAdjustDialog({
   onSaved: () => void;
 }) {
   const [type, setType] = useState<"add" | "reduce">("add");
-  const [qty, setQty] = useState("");
+  const [qty, setQty] = useState(0);
   const [date, setDate] = useState(today());
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
+  // Synchronous double-submit guard — `saving` state doesn't update until the
+  // next render, so two rapid submits in the same tick both see it false.
+  const savingRef = useRef(false);
 
   useEffect(() => {
     if (item) {
       setType("add");
-      setQty("");
+      setQty(0);
       setDate(today());
       setReason("");
       setSaving(false);
+      savingRef.current = false;
     }
   }, [item]);
 
   if (!item) return null;
-  const n = parseFloat(qty) || 0;
+  const n = qty;
   const newStock = Math.round((item.stock + (type === "add" ? n : -n)) * 100) / 100;
 
   const save = (e: React.FormEvent) => {
     e.preventDefault();
-    if (saving) return;
+    if (savingRef.current) return;
     if (n <= 0) {
       toast.error("Enter quantity to adjust");
       return;
     }
+    savingRef.current = true;
     setSaving(true);
-    ItemRepo.adjustField(item.id, "stock", type === "add" ? n : -n);
-    StockAdjustmentRepo.add({
+    // Stock change + its audit record commit together as one atomic batch —
+    // otherwise a partial failure could move stock with no audit trail (or
+    // vice versa).
+    const batch = newBatch();
+    ItemRepo.adjustFieldBatched(batch, item.id, "stock", type === "add" ? n : -n);
+    StockAdjustmentRepo.addBatched(batch, {
       itemId: item.id,
       itemName: item.name,
       date,
@@ -369,6 +516,7 @@ export function StockAdjustDialog({
       qty: n,
       reason: reason.trim() || undefined,
     } as any);
+    commitBatch(batch, "stock adjustment");
     toast.success(
       `${item.name}: stock ${type === "add" ? "increased" : "reduced"} by ${n} → now ${newStock} ${item.unit}`,
     );
@@ -406,12 +554,7 @@ export function StockAdjustDialog({
             </button>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Field
-              label={`Quantity (${item.unit}) *`}
-              type="number"
-              value={qty}
-              onChange={(e) => setQty(e.target.value)}
-            />
+            <NumField label={`Quantity (${item.unit}) *`} value={qty} onValue={setQty} />
             <Field
               label="Date"
               type="date"
@@ -638,6 +781,7 @@ export function ItemDialog({
   const firstRef = useRef<HTMLInputElement>(null);
   const [f, setF] = useState<Partial<Item>>({});
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   const [nameOpen, setNameOpen] = useState(false);
 
   useEffect(() => {
@@ -653,6 +797,7 @@ export function ItemDialog({
         },
       );
       setSaving(false);
+      savingRef.current = false;
       setNameOpen(false);
       setTimeout(() => firstRef.current?.focus(), 50);
     }
@@ -660,7 +805,7 @@ export function ItemDialog({
 
   const save = (e: React.FormEvent) => {
     e.preventDefault();
-    if (saving) return;
+    if (savingRef.current) return;
     if (!f.name?.trim()) {
       toast.error("Name required");
       return;
@@ -677,14 +822,19 @@ export function ItemDialog({
       toast.error("Prices cannot be negative");
       return;
     }
+    savingRef.current = true;
     setSaving(true);
     if (item) {
-      // Correcting opening stock shifts current stock by the same difference
+      // Correcting opening stock shifts current stock by the same difference.
+      // Apply the descriptive fields AND the opening-stock delta in ONE atomic
+      // write via adjustField's `extra` merge: it increments stock rather than
+      // full-doc-overwriting it, so a sale/return that changed this item's
+      // stock while the dialog was open is preserved, not clobbered by a stale
+      // snapshot. (A full-doc updateBatched would re-write the cached stock.)
       const openingDelta = (f.openingStock ?? 0) - (item.openingStock ?? 0);
       const patch: Partial<Item> = { ...f };
-      delete patch.stock; // stock only changes via atomic adjustments
-      ItemRepo.update(item.id, patch);
-      if (openingDelta !== 0) ItemRepo.adjustField(item.id, "stock", openingDelta);
+      delete patch.stock; // stock only changes via atomic increments
+      ItemRepo.adjustField(item.id, "stock", openingDelta, patch);
       toast.success(
         openingDelta !== 0
           ? `Item updated — stock adjusted by ${openingDelta > 0 ? "+" : ""}${openingDelta}`
@@ -724,7 +874,7 @@ export function ItemDialog({
           <DialogTitle>{item ? "Edit Item" : "New Item"}</DialogTitle>
         </DialogHeader>
         <form onSubmit={save} className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div className="col-span-2 relative">
+          <div className="sm:col-span-2 relative">
             <Field
               ref={firstRef}
               label="Name *"
@@ -788,17 +938,24 @@ export function ItemDialog({
           />
           <Field
             label="Min Stock (low-stock alert)"
-            type="number"
+            type="text"
+            inputMode="decimal"
             value={f.minStock ?? ""}
             onChange={(e) => {
+              const v = e.target.value;
+              // Digits + at most one dot, same filter NumInput uses — plain
+              // type="number" has a known Safari bug where clearing the
+              // field can leave it stuck showing 0 with backspace unable to
+              // remove it, which is exactly why every other numeric field in
+              // the app avoids it. Kept as its own Field (not NumField) since
               // "" || undefined here would also swallow a deliberately
               // entered 0 (alert exactly when stock runs out) — only an
               // empty field should mean "no threshold set".
-              const v = e.target.value;
+              if (!/^\d*\.?\d*$/.test(v)) return;
               setF({ ...f, minStock: v === "" ? undefined : Math.max(0, parseFloat(v) || 0) });
             }}
           />
-          <div className="col-span-3 flex justify-end gap-2 mt-2">
+          <div className="sm:col-span-3 flex justify-end gap-2 mt-2">
             <Button
               type="button"
               variant="outline"
@@ -826,7 +983,7 @@ interface PreviewRow {
   wholesalePrice?: number;
   minStock?: number;
   openingStock: number;
-  status: "new" | "update" | "error";
+  status: "new" | "update" | "error" | "duplicate";
   matchId?: string;
   error?: string;
 }
@@ -841,9 +998,6 @@ const HEADER_ALIASES: Record<string, string[]> = {
   openingStock: ["openingstock", "opening", "stock"],
 };
 
-function normalizeHeader(h: string): string {
-  return h.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
 
 /** Turn a parsed bulk-import table (from CSV or an Excel sheet) into preview
  * rows, matching each against existing items by Name (same rule the New/Edit
@@ -900,19 +1054,24 @@ function buildPreview(table: string[][], existing: Item[]): PreviewRow[] {
       continue;
     }
 
-    const match = existing.find((it) => it.name.trim().toLowerCase() === name.toLowerCase());
+    // A name repeated within the file is a normal human slip, not something to
+    // scold the user over — it's quietly marked "duplicate" and skipped (the
+    // first occurrence is kept), so the rest of the file still imports. This is
+    // distinct from a real "error" (missing name / negative price) that the
+    // user actually needs to fix. Either way a name is never imported twice.
+    const dupKey = name.toLowerCase();
+    const dupRow = seenNew.get(dupKey);
+    if (dupRow) {
+      out.push({ ...rec, status: "duplicate", error: `Same name as row ${dupRow} — skipped` });
+      continue;
+    }
+    seenNew.set(dupKey, rowNum);
 
+    const match = existing.find((it) => it.name.trim().toLowerCase() === dupKey);
     if (match) {
       rec.status = "update";
       rec.matchId = match.id;
     } else {
-      const dupKey = name.toLowerCase();
-      const dupRow = seenNew.get(dupKey);
-      if (dupRow) {
-        out.push({ ...rec, status: "error", error: `Duplicate of row ${dupRow} in this file` });
-        continue;
-      }
-      seenNew.set(dupKey, rowNum);
       rec.status = "new";
     }
     out.push(rec);
@@ -947,32 +1106,9 @@ function BulkImportDialog({
     const file = e.target.files?.[0];
     if (!file) return;
     setFileName(file.name);
-    const buf = await file.arrayBuffer();
-    const isExcel = /\.(xlsx|xls)$/i.test(file.name);
-    let table: string[][];
-    if (isExcel) {
-      // Real Excel workbook, not CSV text — read via the same xlsx library
-      // already used for exports, take the first sheet, cells as strings so
-      // downstream parsing (num(), trim()) matches the CSV path exactly.
-      // Loaded on demand — xlsx is ~400KB and only this import flow needs it.
-      const XLSX = await import("xlsx");
-      const wb = XLSX.read(buf, { type: "array" });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      table = (XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" }) as unknown[][]).map(
-        (row) => row.map((c) => String(c ?? "")),
-      );
-    } else {
-      // Decode by BOM — Excel's "Unicode Text" export is UTF-16, which read
-      // as UTF-8 turns into garbage and every row silently errors
-      const b = new Uint8Array(buf);
-      const text =
-        b[0] === 0xff && b[1] === 0xfe
-          ? new TextDecoder("utf-16le").decode(buf)
-          : b[0] === 0xfe && b[1] === 0xff
-            ? new TextDecoder("utf-16be").decode(buf)
-            : new TextDecoder("utf-8").decode(buf);
-      table = parseCsv(text);
-    }
+    // Shared parser — handles .xlsx (incl. the WPS truncated-range quirk) and
+    // CSV/UTF-16 identically for both item and party import (see sheetImport).
+    const table = await parseImportFile(file);
     if (!table.length) {
       toast.error("File looks empty or unreadable — export it as CSV/Excel and try again");
       setRows([]);
@@ -992,9 +1128,11 @@ function BulkImportDialog({
   const newCount = rows.filter((r) => r.status === "new").length;
   const updateCount = rows.filter((r) => r.status === "update").length;
   const errorCount = rows.filter((r) => r.status === "error").length;
+  const dupCount = rows.filter((r) => r.status === "duplicate").length;
 
   const doImport = async () => {
-    const valid = rows.filter((r) => r.status !== "error");
+    // Only new/update rows import — "duplicate" and "error" rows are skipped.
+    const valid = rows.filter((r) => r.status === "new" || r.status === "update");
     if (!valid.length || importing) return;
     setImporting(true);
     try {
@@ -1078,6 +1216,11 @@ function BulkImportDialog({
               <div className="flex gap-4 text-sm">
                 <span className="text-success font-medium">{newCount} new</span>
                 <span className="text-primary font-medium">{updateCount} update</span>
+                {dupCount > 0 && (
+                  <span className="text-amber-600 font-medium">
+                    {dupCount} duplicate{dupCount > 1 ? "s" : ""} (skipped)
+                  </span>
+                )}
                 {errorCount > 0 && (
                   <span className="text-destructive font-medium">
                     {errorCount} error{errorCount > 1 ? "s" : ""} (skipped)
@@ -1108,6 +1251,9 @@ function BulkImportDialog({
                           {r.status === "new" && <span className="text-success font-medium">New</span>}
                           {r.status === "update" && (
                             <span className="text-primary font-medium">Update</span>
+                          )}
+                          {r.status === "duplicate" && (
+                            <span className="text-amber-600 font-medium">{r.error}</span>
                           )}
                           {r.status === "error" && (
                             <span className="text-destructive font-medium">{r.error}</span>

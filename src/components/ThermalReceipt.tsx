@@ -20,6 +20,10 @@ export function ThermalReceipt({
 }) {
   const gstOn = inv.gstEnabled !== false;
   const paperMm = width === 80 ? 72 : 48; // printable width inside the roll
+  // The roll is wider than the printable content (a real physical margin
+  // thermal paper has) — split that leftover evenly so it reads as a
+  // centered receipt, not flush-left with all the slack dumped on the right.
+  const sideMarginMm = (width - paperMm) / 2;
   const balance = r2(inv.total - inv.paid);
   const base: React.CSSProperties = {
     fontFamily: "'Courier New', monospace",
@@ -37,8 +41,33 @@ export function ThermalReceipt({
   );
 
   return (
-    <div className="print-visible" style={base}>
-      <style>{`@media print { @page { size: ${width}mm auto; margin: 3mm; } }`}</style>
+    <div className="print-visible thermal-receipt" style={base}>
+      {/* !important on both descriptors: src/styles.css sets a global
+          @page { size: A4 } default for every other printable page, and
+          without !important that can win the cascade over this dynamic
+          size depending on browser-specific @page ordering — forcing it
+          is the only way to guarantee the thermal width always applies.
+          The 12mm padding on .print-visible (styles.css) is sized for a
+          full A4 sheet — on an 80mm-wide, often-short receipt that's a
+          disproportionate chunk of the page, especially vertically on a
+          1-2 item bill. The extra selector specificity here (two classes
+          beat one) shrinks it to something sane for a narrow roll.
+          left/right: styles.css's base rule pins this to the page's left
+          edge (left:0) with width staying at its own fixed `paperMm` (that
+          inline width has no !important, but neither does the base rule's
+          width:100%, so plain cascade/specificity — inline wins — keeps it
+          at paperMm, never actually 100%) — leaving 100% of the roll's
+          extra width as dead space on the right only. Centering it here
+          instead splits that leftover evenly on both sides. */}
+      <style>{`@media print {
+        @page { size: ${width}mm auto !important; margin: 3mm !important; }
+        .thermal-receipt.print-visible {
+          padding: 3mm !important;
+          left: ${sideMarginMm}mm !important;
+          right: ${sideMarginMm}mm !important;
+          width: ${paperMm}mm !important;
+        }
+      }`}</style>
 
       <div style={{ textAlign: "center" }}>
         <div style={{ fontSize: width === 80 ? 16 : 13, fontWeight: 800 }}>{company.name}</div>
