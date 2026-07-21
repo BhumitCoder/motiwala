@@ -35,8 +35,8 @@ async function getAdminApp() {
       if (!raw) {
         throw new Error(
           "FIREBASE_SERVICE_ACCOUNT_KEY is not set — add the Firebase Admin SDK service " +
-            "account JSON (Project Settings → Service Accounts → Generate new private key) " +
-            "as an environment variable first.",
+          "account JSON (Project Settings → Service Accounts → Generate new private key) " +
+          "as an environment variable first.",
         );
       }
       const serviceAccount = JSON.parse(raw);
