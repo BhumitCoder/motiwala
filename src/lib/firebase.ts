@@ -8,17 +8,17 @@ import {
 } from "firebase/firestore";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyA7S0yVAMHP8S2uEPWAYRRxpCsS2id1BGE",
-  authDomain: "onbil-c27e1.firebaseapp.com",
-  projectId: "onbil-c27e1",
-  storageBucket: "onbil-c27e1.firebasestorage.app",
-  messagingSenderId: "547255202552",
-  appId: "1:547255202552:web:84c61081daeacdeab7010d",
-  measurementId: "G-67BG3277DV"
+  apiKey: "AIzaSyDInBeT_ytLjhkRv_J3rtagRXUdY4WfEds",
+  authDomain: "ibellmobiles-123.firebaseapp.com",
+  projectId: "ibellmobiles-123",
+  storageBucket: "ibellmobiles-123.firebasestorage.app",
+  messagingSenderId: "191077483403",
+  appId: "1:191077483403:web:1c934544f5b7e3cbc0658e",
+  measurementId: "G-3WSQ6FXD71",
 };
 
 /** Named Firestore database (not the "(default)" one) */
-export const DATABASE_ID = "omimpex";
+export const DATABASE_ID = "teligramboatiball";
 
 export const isBrowser = typeof window !== "undefined";
 
