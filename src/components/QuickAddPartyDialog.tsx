@@ -10,6 +10,7 @@ import type { Party } from "@/types";
 export interface QuickAddPartyDetails {
   name: string;
   phone: string;
+  address: string;
   openingBalance: number;
   gstin: string;
   creditLimit: number;
@@ -38,6 +39,7 @@ export function QuickAddPartyDialog({
 }) {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
+  const [address, setAddress] = useState("");
   const [openingBalance, setOpeningBalance] = useState(0);
   const [gstin, setGstin] = useState("");
   const [creditLimit, setCreditLimit] = useState(0);
@@ -48,6 +50,7 @@ export function QuickAddPartyDialog({
     if (draft) {
       setName(draft.name);
       setPhone(draft.phone);
+      setAddress("");
       setOpeningBalance(0);
       setGstin("");
       setCreditLimit(0);
@@ -64,7 +67,7 @@ export function QuickAddPartyDialog({
       toast.error("Name required");
       return;
     }
-    onConfirm({ name, phone, openingBalance, gstin, creditLimit });
+    onConfirm({ name, phone, address, openingBalance, gstin, creditLimit });
   };
 
   // Live "does this already exist?" hint — the name typed at the counter
@@ -138,6 +141,18 @@ export function QuickAddPartyDialog({
             onChange={(e) => setPhone(e.target.value)}
             inputMode="numeric"
           />
+          {/* Multi-line, like the Parties screen — this is what prints under
+              the party name on the counter bill. */}
+          <label className="sm:col-span-2 flex flex-col gap-1 text-[12px]">
+            <span className="text-muted-foreground font-medium">Address</span>
+            <textarea
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              rows={2}
+              placeholder="Shop / street, area, city — printed on the bill"
+              className="px-2 py-1.5 border rounded bg-background outline-none focus:border-primary focus:ring-1 focus:ring-primary resize-y"
+            />
+          </label>
           <NumField
             label="Opening Balance"
             value={openingBalance}

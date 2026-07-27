@@ -333,6 +333,11 @@ function PartyStatementPage() {
                   "No phone saved"
                 )}
               </p>
+              {party.address && (
+                <p className="text-[11px] text-gray-400 truncate" title={party.address}>
+                  {party.address.replace(/\s*\n\s*/g, ", ")}
+                </p>
+              )}
             </div>
           </div>
           {/* Export/share actions — kept to the left of the edit button so

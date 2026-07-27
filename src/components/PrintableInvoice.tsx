@@ -6,6 +6,9 @@ interface Props {
   inv: Invoice;
   company: Company;
   mode: "sale" | "purchase";
+  /** Shop code per line (Items → Item Code), keyed by LineItem.id — see
+   * src/lib/itemCodes.ts. Lines without one print a blank Code cell. */
+  codeByLine?: Record<string, string>;
   /** "print-area" (default) stays hidden until printed — used for the
    * always-mounted copy inside the create/edit form. Detail pages that show
    * this invoice on screen too should pass "print-visible" instead. */
@@ -77,6 +80,7 @@ export function PrintableInvoice({
   inv,
   company,
   mode,
+  codeByLine,
   className = "print-area",
   scale = 1,
 }: Props) {
@@ -105,6 +109,9 @@ export function PrintableInvoice({
   });
 
   const totalQty = inv.lineItems.reduce((s, l) => s + l.qty, 0);
+  // A Disc% column of nothing but "0%" is dead width — only shown when some
+  // line actually carries a discount.
+  const discOn = inv.lineItems.some((l) => l.discountPct > 0);
 
   // Every font-size / padding / column-width number below goes through this,
   // so `scale` genuinely shrinks the rendered layout instead of just the
@@ -154,9 +161,7 @@ export function PrintableInvoice({
         <tbody>
           <tr>
             <td style={{ ...cellStyle, verticalAlign: "top" }}>
-              <div
-                style={{ fontSize: s(10), color: "#555", fontWeight: 600, marginBottom: s(3) }}
-              >
+              <div style={{ fontSize: s(10), color: "#555", fontWeight: 600, marginBottom: s(3) }}>
                 {isSale ? "BILL TO" : "SUPPLIER"}
               </div>
               <div style={{ fontSize: s(14), fontWeight: 700 }}>{inv.partyName || "—"}</div>
@@ -190,10 +195,11 @@ export function PrintableInvoice({
           <tr>
             <th style={{ ...th, width: s(28), textAlign: "center" }}>#</th>
             <th style={th}>Item</th>
+            <th style={{ ...th, width: s(60) }}>Code</th>
             <th style={{ ...th, textAlign: "right", width: s(55) }}>Qty</th>
             <th style={{ ...th, width: s(45) }}>Unit</th>
             <th style={{ ...th, textAlign: "right", width: s(75) }}>Price</th>
-            <th style={{ ...th, textAlign: "right", width: s(55) }}>Disc%</th>
+            {discOn && <th style={{ ...th, textAlign: "right", width: s(55) }}>Disc%</th>}
             {gstOn && <th style={{ ...th, textAlign: "right", width: s(55) }}>GST%</th>}
             {gstOn && <th style={{ ...th, textAlign: "right", width: s(75) }}>GST Amt</th>}
             <th style={{ ...th, textAlign: "right", width: s(90) }}>Amount</th>
@@ -207,10 +213,11 @@ export function PrintableInvoice({
               <tr key={l.id}>
                 <td style={{ ...cellStyle, textAlign: "center" }}>{i + 1}</td>
                 <td style={cellStyle}>{l.name}</td>
+                <td style={cellStyle}>{codeByLine?.[l.id] ?? ""}</td>
                 <td style={{ ...cellStyle, textAlign: "right" }}>{l.qty}</td>
                 <td style={cellStyle}>{l.unit}</td>
                 <td style={{ ...cellStyle, textAlign: "right" }}>{fmtMoney(l.price)}</td>
-                <td style={{ ...cellStyle, textAlign: "right" }}>{l.discountPct}%</td>
+                {discOn && <td style={{ ...cellStyle, textAlign: "right" }}>{l.discountPct}%</td>}
                 {gstOn && <td style={{ ...cellStyle, textAlign: "right" }}>{l.gstRate}%</td>}
                 {gstOn && <td style={{ ...cellStyle, textAlign: "right" }}>{fmtMoney(gstAmt)}</td>}
                 <td style={{ ...cellStyle, textAlign: "right", fontWeight: 600 }}>
@@ -229,17 +236,24 @@ export function PrintableInvoice({
                 <td style={cellStyle}></td>
                 <td style={cellStyle}></td>
                 <td style={cellStyle}></td>
+                {discOn && <td style={cellStyle}></td>}
                 {gstOn && <td style={cellStyle}></td>}
                 {gstOn && <td style={cellStyle}></td>}
                 <td style={cellStyle}></td>
               </tr>
             ))}
           <tr>
-            <td style={{ ...cellStyle, fontWeight: 700 }} colSpan={2}>
+            {/* #, Item and Code */}
+            <td style={{ ...cellStyle, fontWeight: 700 }} colSpan={3}>
               Item Total
             </td>
             <td style={{ ...cellStyle, textAlign: "right", fontWeight: 700 }}>{totalQty}</td>
-            <td style={cellStyle} colSpan={gstOn ? 4 : 2}></td>
+            {/* Spans every column between Qty and the GST-amount/Amount
+                totals — Unit, Price, and whichever of Disc%/GST% are shown.
+                Counted from the columns actually rendered: the old fixed
+                value silently left the row a cell short with GST turned
+                off, which pushed the Amount total under the wrong heading. */}
+            <td style={cellStyle} colSpan={2 + (discOn ? 1 : 0) + (gstOn ? 1 : 0)}></td>
             {gstOn && (
               <td style={{ ...cellStyle, textAlign: "right", fontWeight: 700 }}>
                 {fmtMoney(Object.values(gstBuckets).reduce((s, b) => s + b.tax, 0))}
@@ -355,9 +369,7 @@ export function PrintableInvoice({
                   )}
                   <tr style={{ background: "#f0f0f0", fontWeight: 800, fontSize: s(14) }}>
                     <td style={{ padding: s(8), borderTop: "2px solid #000" }}>Grand Total</td>
-                    <td
-                      style={{ padding: s(8), textAlign: "right", borderTop: "2px solid #000" }}
-                    >
+                    <td style={{ padding: s(8), textAlign: "right", borderTop: "2px solid #000" }}>
                       {fmtMoney(inv.total)}
                     </td>
                   </tr>
@@ -431,7 +443,6 @@ export function PrintableInvoice({
           </tr>
         </tbody>
       </table>
-
     </div>
   );
 }

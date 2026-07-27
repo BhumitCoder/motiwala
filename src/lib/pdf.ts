@@ -157,3 +157,27 @@ export async function shareFileNow(file: File): Promise<"shared" | "cancelled" |
 export function downloadFile(file: File) {
   triggerDownload(file, file.name);
 }
+
+/**
+ * Turns whatever the PDF pipeline threw into something worth putting in a
+ * toast, and logs the original to the console.
+ *
+ * PDF generation is a server round trip (auth check → headless Chromium →
+ * bytes back), so it can fail for reasons the user can actually act on: a
+ * sign-in that expired, no internet, or a server that's missing its
+ * credentials. Callers used to `catch {}` and show one fixed "try Print
+ * instead" line for all of them, which made every cause look identical and
+ * left nothing to debug from.
+ */
+export function pdfErrorReason(err: unknown, context: string): string {
+  console.error(`PDF generation failed (${context})`, err);
+  const msg = (err instanceof Error ? err.message : String(err ?? "")).trim();
+  if (!msg) return "unknown error";
+  if (/not signed in|id ?token|expired|auth/i.test(msg)) return "your sign-in expired — sign in again";
+  if (/failed to fetch|network|load failed|offline/i.test(msg)) return "no connection to the server";
+  if (/service_account|FIREBASE_SERVICE_ACCOUNT_KEY/i.test(msg))
+    return "the server is missing its Firebase key — check the deployment settings";
+  if (/chrom/i.test(msg)) return "the server could not start its PDF renderer";
+  // Anything else: show it verbatim rather than hiding it behind a guess.
+  return msg.length > 160 ? msg.slice(0, 160) + "…" : msg;
+}

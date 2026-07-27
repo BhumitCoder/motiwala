@@ -419,6 +419,49 @@ export function buildPartyLedger(
   return { rows: out, fullBalance, totalDebit, totalCredit };
 }
 
+/**
+ * The party's running balance immediately BEFORE a given document, and
+ * immediately after it — the "Previous Balance / Closing Balance" pair the
+ * printed counter bill shows.
+ *
+ * Derived from buildPartyLedger's own rows rather than re-summing the
+ * documents, so the two can never disagree: a bill's Closing Balance is
+ * exactly the balance its last row carries on the Statement page. A bill can
+ * contribute more than one ledger row (the sale itself plus money received
+ * with it), hence first-row/last-row rather than a single lookup.
+ *
+ * Returns null when the document isn't in this party's ledger at all (wrong
+ * party, or the collection it lives in isn't loaded) — callers must treat
+ * that as "don't print a balance", never as zero.
+ */
+export function docBalanceContext(
+  party: { id: string; openingBalance?: number },
+  data: {
+    sales: Invoice[];
+    purchases: Invoice[];
+    saleReturns: Return[];
+    purchaseReturns: Return[];
+    payments: Payment[];
+  },
+  docId: string,
+): { previous: number; closing: number } | null {
+  const { rows } = buildPartyLedger(party, data);
+  const first = rows.findIndex((r) => r.docId === docId);
+  if (first < 0) return null;
+  let last = first;
+  for (let i = rows.length - 1; i > first; i--) {
+    if (rows[i].docId === docId) {
+      last = i;
+      break;
+    }
+  }
+  // rows[0] is the Opening Balance row whenever the party has one, so
+  // stepping back one row already accounts for it; with no opening balance
+  // there is no row before the first transaction and the party started at 0.
+  const previous = first === 0 ? (party.openingBalance ?? 0) : rows[first - 1].balance;
+  return { previous: r2(previous), closing: r2(rows[last].balance) };
+}
+
 export interface StatementItem {
   name: string;
   qty: number;

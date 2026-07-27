@@ -386,6 +386,7 @@ export function ReturnForm({ mode }: Props) {
       name,
       type: "both",
       phone: phone || undefined,
+      address: details.address.trim() || undefined,
       openingBalance: details.openingBalance || 0,
       gstin: details.gstin.trim() || undefined,
       creditLimit: details.creditLimit || undefined,

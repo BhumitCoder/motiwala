@@ -38,10 +38,12 @@ import { usePermissions } from "@/hooks/usePermissions";
 
 /** Bulk import/export columns — kept in lockstep with the New/Edit Item form
  * fields (Name, Category, Purchase/Sale/Wholesale Price, Min/Opening Stock).
- * No SKU/Barcode/Unit/GST Rate/HSN — those aren't part of this client's
- * item data model anywhere else in the app. */
+ * Item Code maps to Item.sku and is what prints in the Code column of the
+ * 2-Copies bill. Barcode/Unit/GST Rate/HSN are still excluded — those aren't
+ * part of this client's item data model anywhere else in the app. */
 const BULK_COLUMNS = [
   "Name",
+  "Item Code",
   "Category",
   "Purchase Price",
   "Sale Price",
@@ -58,6 +60,7 @@ const EXPORT_COLUMNS = [...BULK_COLUMNS, "Current Stock"] as const;
 function itemToBulkRow(it: Item): string[] {
   return [
     it.name,
+    it.sku ?? "",
     it.category ?? "",
     String(it.purchasePrice ?? 0),
     String(it.salePrice ?? 0),
@@ -154,6 +157,13 @@ function ItemsPage() {
       label: "Name",
       render: (r) => <span className="font-medium">{r.name}</span>,
       sortValue: (r) => r.name,
+    },
+    {
+      key: "sku",
+      label: "Code",
+      width: "110px",
+      render: (r) => r.sku ?? "—",
+      sortValue: (r) => r.sku ?? "",
     },
     { key: "category", label: "Category", width: "140px", render: (r) => r.category ?? "—" },
     {
@@ -306,9 +316,7 @@ function ItemsPage() {
             />
             Select all {filtered.length}
           </label>
-          <span className="text-xs font-semibold text-foreground">
-            {selectedIds.size} selected
-          </span>
+          <span className="text-xs font-semibold text-foreground">{selectedIds.size} selected</span>
           <div className="flex items-center gap-2 ml-auto">
             <Button size="sm" variant="outline" onClick={() => setBulkEditOpen(true)}>
               <Pencil className="h-3.5 w-3.5" /> Bulk Edit
@@ -832,7 +840,7 @@ export function ItemDialog({
       // stock while the dialog was open is preserved, not clobbered by a stale
       // snapshot. (A full-doc updateBatched would re-write the cached stock.)
       const openingDelta = (f.openingStock ?? 0) - (item.openingStock ?? 0);
-      const patch: Partial<Item> = { ...f };
+      const patch: Partial<Item> = { ...f, sku: f.sku?.trim() || undefined };
       delete patch.stock; // stock only changes via atomic increments
       ItemRepo.adjustField(item.id, "stock", openingDelta, patch);
       toast.success(
@@ -844,6 +852,7 @@ export function ItemDialog({
       ItemRepo.add({
         ...f,
         name: f.name!,
+        sku: f.sku?.trim() || undefined,
         unit: f.unit ?? "pcs",
         gstRate: f.gstRate ?? 0,
         purchasePrice: f.purchasePrice ?? 0,
@@ -911,6 +920,16 @@ export function ItemDialog({
               </div>
             )}
           </div>
+          {/* Short shop code (e.g. "05#", "Pearl") — this is what fills the
+              Code column on the printed 2-Copies bill. Stored on Item.sku,
+              which already existed on the type but had no field until now, so
+              the column had nowhere to get a value from. */}
+          <Field
+            label="Item Code"
+            value={f.sku ?? ""}
+            onChange={(e) => setF({ ...f, sku: e.target.value })}
+            hint="Printed in the Code column on the bill"
+          />
           <Field
             label="Category"
             value={f.category ?? ""}
@@ -977,6 +996,7 @@ export function ItemDialog({
 interface PreviewRow {
   rowNum: number;
   name: string;
+  sku?: string;
   category?: string;
   purchasePrice: number;
   salePrice: number;
@@ -990,6 +1010,7 @@ interface PreviewRow {
 
 const HEADER_ALIASES: Record<string, string[]> = {
   name: ["name", "itemname"],
+  sku: ["itemcode", "code", "sku", "itemsku"],
   category: ["category"],
   purchasePrice: ["purchaseprice", "purchase"],
   salePrice: ["saleprice", "sale", "price"],
@@ -997,7 +1018,6 @@ const HEADER_ALIASES: Record<string, string[]> = {
   minStock: ["minstock", "min"],
   openingStock: ["openingstock", "opening", "stock"],
 };
-
 
 /** Turn a parsed bulk-import table (from CSV or an Excel sheet) into preview
  * rows, matching each against existing items by Name (same rule the New/Edit
@@ -1036,6 +1056,7 @@ function buildPreview(table: string[][], existing: Item[]): PreviewRow[] {
     const rec: PreviewRow = {
       rowNum,
       name,
+      sku: cell(row, "sku") || undefined,
       category: cell(row, "category") || undefined,
       purchasePrice: num(cell(row, "purchasePrice"), 0),
       salePrice: num(cell(row, "salePrice"), 0),
@@ -1143,8 +1164,13 @@ function BulkImportDialog({
           if (r.status === "update" && r.matchId) {
             // Descriptive/pricing fields only — bulk update never touches
             // stock, which stays governed by the audited adjustment flow.
+            // Item Code is only written when the sheet actually supplies one:
+            // updateBatched rewrites the whole document, so patching an
+            // undefined sku would wipe codes already saved against the item
+            // just because this sheet has no Item Code column.
             ItemRepo.updateBatched(batch, r.matchId, {
               name: r.name,
+              ...(r.sku ? { sku: r.sku } : {}),
               category: r.category,
               purchasePrice: r.purchasePrice,
               salePrice: r.salePrice,
@@ -1154,6 +1180,7 @@ function BulkImportDialog({
           } else {
             ItemRepo.addBatched(batch, {
               name: r.name,
+              sku: r.sku,
               category: r.category,
               unit: "pcs",
               gstRate: 0,
@@ -1188,9 +1215,9 @@ function BulkImportDialog({
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <p className="text-sm text-muted-foreground max-w-lg">
-              Matches by <b>Name</b> — matched rows update the existing item, unmatched rows
-              create a new one. Stock is only set for new items; existing items' stock is never
-              changed by bulk import.
+              Matches by <b>Name</b> — matched rows update the existing item, unmatched rows create
+              a new one. Stock is only set for new items; existing items' stock is never changed by
+              bulk import.
             </p>
             <Button
               type="button"
@@ -1248,7 +1275,9 @@ function BulkImportDialog({
                         <td className="p-1.5 text-right">{fmtMoney(r.salePrice)}</td>
                         <td className="p-1.5 text-right">{r.openingStock}</td>
                         <td className="p-1.5">
-                          {r.status === "new" && <span className="text-success font-medium">New</span>}
+                          {r.status === "new" && (
+                            <span className="text-success font-medium">New</span>
+                          )}
                           {r.status === "update" && (
                             <span className="text-primary font-medium">Update</span>
                           )}

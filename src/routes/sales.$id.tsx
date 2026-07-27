@@ -1,16 +1,27 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
-import { SalesRepo, CompanyRepo } from "@/repositories";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  SalesRepo,
+  CompanyRepo,
+  PartyRepo,
+  PaymentRepo,
+  PurchaseRepo,
+  SaleReturnRepo,
+  PurchaseReturnRepo,
+} from "@/repositories";
+import { docBalanceContext } from "@/lib/ledger";
+import { itemCodesByLine } from "@/lib/itemCodes";
 import type { Invoice, Company, PrintFormat } from "@/types";
 import { fmtMoney } from "@/lib/format";
 import { printWithName, printOrEscapeStandalone, isStandalone } from "@/lib/print";
-import { downloadElementAsPdf } from "@/lib/pdf";
+import { downloadElementAsPdf, pdfErrorReason } from "@/lib/pdf";
 import { useShareablePdf } from "@/hooks/useShareablePdf";
 import { useFitScale } from "@/hooks/useFitScale";
 import { sendElementViaWhatsApp } from "@/lib/whatsappSend";
 import { fmtMode } from "@/components/ModePills";
 import { ThermalReceipt } from "@/components/ThermalReceipt";
 import { PrintableInvoice } from "@/components/PrintableInvoice";
+import { PrintableEstimate } from "@/components/PrintableEstimate";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useRepoData } from "@/hooks/useRepoData";
 import { toast } from "sonner";
@@ -51,13 +62,18 @@ const A4_W = 794;
 const A4_H = 1123;
 const A4_2UP_W = 1120;
 const A4_2UP_H = 793;
+/** Height of one counter-bill copy inside the landscape sheet — the sheet's
+ * 793px minus its 24px top and bottom padding. Passed to PrintableEstimate so
+ * its item grid stretches to the bottom of the paper instead of leaving the
+ * lower half of the page blank. */
+const COPY_H = A4_2UP_H - 48;
 
 function InvoiceDetailPage() {
   const _repoV = useRepoData();
   const { id } = Route.useParams();
   const { print } = Route.useSearch();
   const navigate = useNavigate();
-  const { isOwner, canEdit } = usePermissions();
+  const { isOwner, canEdit, canView } = usePermissions();
   const editAllowed = isOwner || canEdit("sales");
   const [inv, setInv] = useState<Invoice | null>(null);
   const [co, setCo] = useState<Company | null>(null);
@@ -90,6 +106,39 @@ function InvoiceDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [print, inv]);
 
+  // ── Extra data the "2 Copies" counter bill needs ──────────────────────
+  // The party's address and the per-item Code come from Master Data, and the
+  // Previous/Closing Balance needs that party's WHOLE ledger — sales,
+  // purchases, both return books and payments. A permission-scoped user who
+  // can't view one of those modules never downloads that collection at all
+  // (see hydrateRepos), so a balance computed on their device would silently
+  // be short. In that case it stays undefined and the bill simply prints
+  // without the balance block, rather than printing a wrong number.
+  const canReadMaster = canView("masterData");
+  const canReadFullLedger =
+    canReadMaster && canView("sales") && canView("purchaseExpenses") && canView("cashBank");
+
+  const estimate = useMemo(() => {
+    if (!inv) return null;
+    const party = canReadMaster ? PartyRepo.get(inv.partyId) : undefined;
+    const codeByLine = canReadMaster ? itemCodesByLine(inv.lineItems) : {};
+    const bal =
+      canReadFullLedger && party
+        ? docBalanceContext(
+            party,
+            {
+              sales: SalesRepo.all(),
+              purchases: PurchaseRepo.all(),
+              saleReturns: SaleReturnRepo.all(),
+              purchaseReturns: PurchaseReturnRepo.all(),
+              payments: PaymentRepo.all(),
+            },
+            inv.id,
+          )
+        : null;
+    return { partyAddress: party?.address, codeByLine, bal };
+  }, [inv, canReadMaster, canReadFullLedger, _repoV]);
+
   const changeFormat = (f: PrintFormat) => {
     setFmt(f);
     if (co) CompanyRepo.save({ ...co, printFormat: f }); // remember for next time
@@ -113,8 +162,8 @@ function InvoiceDetailPage() {
         thermalWidthMm,
       );
       toast.success("Invoice downloaded as PDF");
-    } catch {
-      toast.error("Could not generate PDF — try Print instead");
+    } catch (err) {
+      toast.error(`Could not generate PDF: ${pdfErrorReason(err, "invoice download")}`);
     } finally {
       setPdfBusy(null);
     }
@@ -124,9 +173,14 @@ function InvoiceDetailPage() {
     if (!inv || !printRef.current || pdfBusy) return;
     setPdfBusy("share");
     try {
-      await share(printRef.current, inv.number, fmt === "a4-2up" ? "landscape" : "portrait", thermalWidthMm);
-    } catch {
-      toast.error("Could not share invoice — try Download PDF instead");
+      await share(
+        printRef.current,
+        inv.number,
+        fmt === "a4-2up" ? "landscape" : "portrait",
+        thermalWidthMm,
+      );
+    } catch (err) {
+      toast.error(`Could not share invoice: ${pdfErrorReason(err, "invoice share")}`);
     } finally {
       setPdfBusy(null);
     }
@@ -258,13 +312,24 @@ function InvoiceDetailPage() {
               className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 h-8 px-4 bg-primary text-white rounded-md text-sm font-semibold hover:opacity-90 transition disabled:opacity-60 disabled:cursor-not-allowed"
               title="Print"
             >
-              {pdfBusy ? (<><Loader2 className="h-4 w-4 animate-spin" /> Preparing…</>) : (<><Printer className="h-4 w-4" /> Print</>)}
+              {pdfBusy ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" /> Preparing…
+                </>
+              ) : (
+                <>
+                  <Printer className="h-4 w-4" /> Print
+                </>
+              )}
             </button>
           </div>
         </div>
       </div>
 
-      <div ref={previewRef} className="flex-1 overflow-auto py-6 px-4 flex justify-center bg-gray-100">
+      <div
+        ref={previewRef}
+        className="flex-1 overflow-auto py-6 px-4 flex justify-center bg-gray-100"
+      >
         {(fmt === "thermal80" || fmt === "thermal58") && co ? (
           <div ref={printRef} className="bg-white shadow-lg p-5 h-fit rounded-sm">
             <ThermalReceipt inv={inv} company={co} width={fmt === "thermal80" ? 80 : 58} />
@@ -284,22 +349,43 @@ function InvoiceDetailPage() {
                 transformOrigin: "top left",
               }}
             >
-              {/* Landscape A4 is only 210mm tall — a full invoice at a scale
-                  that "looks" like it fits can still overflow onto a second
-                  page once real margins are counted. Scale is deliberately
-                  conservative (with reclOM IMPEXed print margin) so a normal-length
-                  bill fits on one page instead of silently spilling over. */}
+              {/* Landscape A4 is only 210mm tall. Each copy is given an
+                  exact pixel height (COPY_H ≈ the 6mm-margin printable area)
+                  rather than being left to size itself, so the item grid
+                  stretches to the bottom of the paper and a normal-length
+                  bill can never silently spill onto a second page. */}
               <style>{`@media print {
                 @page { size: A4 landscape; margin: 0; }
                 .a4-2up-sheet { padding: 6mm !important; }
               }`}</style>
               <div className="flex">
-                <div className="flex-1 pr-3">
-                  <PrintableInvoice inv={inv} company={co} mode="sale" className="" scale={0.62} />
+                <div className="flex-1 pr-2 min-w-0">
+                  <PrintableEstimate
+                    inv={inv}
+                    company={co}
+                    mode="sale"
+                    height={COPY_H}
+                    partyAddress={estimate?.partyAddress}
+                    codeByLine={estimate?.codeByLine}
+                    previousBalance={estimate?.bal?.previous}
+                    closingBalance={estimate?.bal?.closing}
+                  />
                 </div>
-                <div className="shrink-0" style={{ borderLeft: "1px dashed #999", margin: "0 4px" }} />
-                <div className="flex-1 pl-3">
-                  <PrintableInvoice inv={inv} company={co} mode="sale" className="" scale={0.62} />
+                <div
+                  className="shrink-0"
+                  style={{ borderLeft: "1px dashed #999", margin: "0 4px" }}
+                />
+                <div className="flex-1 pl-2 min-w-0">
+                  <PrintableEstimate
+                    inv={inv}
+                    company={co}
+                    mode="sale"
+                    height={COPY_H}
+                    partyAddress={estimate?.partyAddress}
+                    codeByLine={estimate?.codeByLine}
+                    previousBalance={estimate?.bal?.previous}
+                    closingBalance={estimate?.bal?.closing}
+                  />
                 </div>
               </div>
             </div>
@@ -321,7 +407,13 @@ function InvoiceDetailPage() {
                   transformOrigin: "top left",
                 }}
               >
-                <PrintableInvoice inv={inv} company={co} mode="sale" className="print-visible" />
+                <PrintableInvoice
+                  inv={inv}
+                  company={co}
+                  mode="sale"
+                  codeByLine={estimate?.codeByLine}
+                  className="print-visible"
+                />
               </div>
             </div>
           )

@@ -34,6 +34,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { PrintableInvoice } from "@/components/PrintableInvoice";
+import { itemCodesByLine } from "@/lib/itemCodes";
 import { NumInput, NumField } from "@/components/NumInput";
 import { ModePills } from "@/components/ModePills";
 import { QuickAddPartyDialog, type QuickAddPartyDetails } from "@/components/QuickAddPartyDialog";
@@ -323,6 +324,7 @@ export function InvoiceForm({ mode, existing }: Props) {
   // any known item is never auto-created with blank/zero defaults anymore.
   const confirmQuickAddItem = (details: {
     name: string;
+    sku: string;
     unit: string;
     gstRate: number;
     salePrice: number;
@@ -341,6 +343,7 @@ export function InvoiceForm({ mode, existing }: Props) {
     }
     const newItem = ItemRepo.add({
       name: details.name.trim(),
+      sku: details.sku.trim() || undefined,
       unit: details.unit.trim() || "pcs",
       gstRate: Math.max(0, details.gstRate),
       purchasePrice: Math.max(0, details.purchasePrice),
@@ -844,6 +847,7 @@ export function InvoiceForm({ mode, existing }: Props) {
       name,
       type: "both",
       phone: phone || undefined,
+      address: details.address.trim() || undefined,
       openingBalance: details.openingBalance || 0,
       gstin: details.gstin.trim() || undefined,
       creditLimit: details.creditLimit || undefined,
@@ -915,12 +919,19 @@ export function InvoiceForm({ mode, existing }: Props) {
                   onChange={(e) => updateInternational({ isInternational: e.target.checked })}
                   className="accent-primary"
                 />
-                <span className="text-[12px] font-semibold whitespace-nowrap">International Purchase</span>
+                <span className="text-[12px] font-semibold whitespace-nowrap">
+                  International Purchase
+                </span>
               </label>
             )}
             {!isSale && (
               <label className="sm:hidden shrink-0 flex items-center gap-2 h-9 px-3 rounded-md border bg-background cursor-pointer select-none">
-                <input type="checkbox" checked={gstOn} onChange={toggleGst} className="accent-primary" />
+                <input
+                  type="checkbox"
+                  checked={gstOn}
+                  onChange={toggleGst}
+                  className="accent-primary"
+                />
                 <span className="text-[12px] font-semibold">GST Bill</span>
               </label>
             )}
@@ -980,7 +991,12 @@ export function InvoiceForm({ mode, existing }: Props) {
           )}
           {/* GST toggle — desktop position */}
           <label className="hidden sm:flex items-center gap-2 h-9 px-3 rounded-md border bg-background cursor-pointer select-none">
-            <input type="checkbox" checked={gstOn} onChange={toggleGst} className="accent-primary" />
+            <input
+              type="checkbox"
+              checked={gstOn}
+              onChange={toggleGst}
+              className="accent-primary"
+            />
             <span className="text-[12px] font-semibold">GST Bill</span>
           </label>
         </div>
@@ -1260,10 +1276,10 @@ export function InvoiceForm({ mode, existing }: Props) {
                     {gstOn && (
                       <td className="py-1.5 px-1">
                         <NumInput
-                        value={l.gstRate}
-                        onValue={(n) => updateLine(l.id, { gstRate: n })}
-                        className="w-full h-7 px-1.5 text-right border rounded bg-background focus:border-primary outline-none"
-                      />
+                          value={l.gstRate}
+                          onValue={(n) => updateLine(l.id, { gstRate: n })}
+                          className="w-full h-7 px-1.5 text-right border rounded bg-background focus:border-primary outline-none"
+                        />
                       </td>
                     )}
                     <td className="text-right px-3 py-1.5 font-semibold tabular-nums">
@@ -1465,7 +1481,10 @@ export function InvoiceForm({ mode, existing }: Props) {
             <label className="flex flex-col gap-1.5 text-[12px] h-full">
               <span className="text-muted-foreground font-medium uppercase text-[11px] tracking-wider">
                 Notes / Terms
-                <span className="normal-case font-normal text-muted-foreground/70"> (optional)</span>
+                <span className="normal-case font-normal text-muted-foreground/70">
+                  {" "}
+                  (optional)
+                </span>
               </span>
               <textarea
                 value={inv.notes ?? ""}
@@ -1494,7 +1513,13 @@ export function InvoiceForm({ mode, existing }: Props) {
         >
           <X className="h-3.5 w-3.5" /> Cancel
         </Button>
-        <Button variant="outline" size="sm" onClick={() => save(true)} disabled={saving} className="shrink-0">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => save(true)}
+          disabled={saving}
+          className="shrink-0"
+        >
           <Printer className="h-3.5 w-3.5" /> Save & Print
         </Button>
         <Button
@@ -1511,7 +1536,12 @@ export function InvoiceForm({ mode, existing }: Props) {
           {saving ? "Saving…" : "Save"}
         </Button>
       </div>
-      <PrintableInvoice inv={inv} company={company} mode={mode} />
+      <PrintableInvoice
+        inv={inv}
+        company={company}
+        mode={mode}
+        codeByLine={itemCodesByLine(inv.lineItems)}
+      />
       <QuickAddPartyDialog
         draft={quickAddParty}
         isSale={isSale}
@@ -1909,7 +1939,9 @@ function ItemNameCell({
                   <div className="font-semibold tabular-nums">
                     {fmtMoney(isSale ? it.salePrice || it.purchasePrice : it.purchasePrice)}
                   </div>
-                  {gstOn && <div className="text-[11px] text-muted-foreground">GST {it.gstRate}%</div>}
+                  {gstOn && (
+                    <div className="text-[11px] text-muted-foreground">GST {it.gstRate}%</div>
+                  )}
                 </div>
               </div>
             ))}
@@ -2001,7 +2033,9 @@ function PriceHistoryCell({
                   >
                     <span className="text-muted-foreground">{fmtDate(h.date)}</span>
                     <span className="text-right tabular-nums">{h.qty}</span>
-                    <span className="text-right tabular-nums font-semibold">{fmtMoney(h.price)}</span>
+                    <span className="text-right tabular-nums font-semibold">
+                      {fmtMoney(h.price)}
+                    </span>
                   </button>
                 ))}
               </div>
@@ -2028,6 +2062,7 @@ function QuickAddItemDialog({
   onPickExisting?: (it: Item) => void;
   onConfirm: (details: {
     name: string;
+    sku: string;
     unit: string;
     gstRate: number;
     salePrice: number;
@@ -2035,6 +2070,7 @@ function QuickAddItemDialog({
   }) => void;
 }) {
   const [name, setName] = useState("");
+  const [sku, setSku] = useState("");
   const [unit, setUnit] = useState("pcs");
   const [gstRate, setGstRate] = useState(0);
   const [salePrice, setSalePrice] = useState(0);
@@ -2045,6 +2081,7 @@ function QuickAddItemDialog({
   useEffect(() => {
     if (draft) {
       setName(draft.name);
+      setSku("");
       setUnit("pcs");
       setGstRate(0);
       setSalePrice(0);
@@ -2062,7 +2099,7 @@ function QuickAddItemDialog({
       toast.error("Name required");
       return;
     }
-    onConfirm({ name, unit, gstRate, salePrice, purchasePrice });
+    onConfirm({ name, sku, unit, gstRate, salePrice, purchasePrice });
   };
 
   // Live "does this already exist?" hint — the name typed at the counter
@@ -2084,8 +2121,8 @@ function QuickAddItemDialog({
           </DialogTitle>
         </DialogHeader>
         <p className="text-[12px] text-muted-foreground -mt-2">
-          "{draft.name}" isn't in your items list yet — set its price & GST before adding it to
-          this {isSale ? "invoice" : "bill"}.
+          "{draft.name}" isn't in your items list yet — set its price & GST before adding it to this{" "}
+          {isSale ? "invoice" : "bill"}.
         </p>
         <form onSubmit={submit} className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="sm:col-span-2 relative">
@@ -2133,6 +2170,15 @@ function QuickAddItemDialog({
               </div>
             )}
           </div>
+          {/* Short shop code — this is what fills the Code column on the
+              printed bill. Set here so an item created mid-billing isn't
+              left without one. */}
+          <Field
+            label="Item Code"
+            value={sku}
+            onChange={(e) => setSku(e.target.value)}
+            hint="Printed in the Code column"
+          />
           <Field label="Unit" value={unit} onChange={(e) => setUnit(e.target.value)} />
           <NumField
             label="GST Rate (%)"

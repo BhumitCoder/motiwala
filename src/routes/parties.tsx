@@ -45,6 +45,7 @@ export const Route = createFileRoute("/parties")({ component: PartiesPage });
 const PARTY_BULK_COLUMNS = [
   "Name",
   "Phone",
+  "Address",
   "Type",
   "Opening Balance",
   "Credit Limit",
@@ -54,6 +55,7 @@ const PARTY_BULK_COLUMNS = [
 const PARTY_ALIASES: Record<string, string[]> = {
   name: ["name", "partyname"],
   phone: ["phone", "mobile", "contact", "phoneno", "mobileno", "phonenumber"],
+  address: ["address", "partyaddress", "billingaddress", "addres"],
   type: ["type", "partytype"],
   openingBalance: ["openingbalance", "opening", "balance", "openingbal"],
   creditLimit: ["creditlimit", "credit", "limit"],
@@ -64,6 +66,7 @@ interface PartyPreviewRow {
   rowNum: number;
   name: string;
   phone?: string;
+  address?: string;
   type: Party["type"];
   openingBalance: number;
   creditLimit?: number;
@@ -114,10 +117,12 @@ function buildPartyPreview(table: string[][], existing: Party[]): PartyPreviewRo
     const phone = cell(row, "phone");
     const creditRaw = cell(row, "creditLimit");
     const gstin = cell(row, "gstin");
+    const address = cell(row, "address");
     const rec: PartyPreviewRow = {
       rowNum,
       name,
       phone: phone || undefined,
+      address: address || undefined,
       type: parseType(cell(row, "type")),
       openingBalance: num(cell(row, "openingBalance"), 0),
       creditLimit: creditRaw ? num(creditRaw) : undefined,
@@ -679,18 +684,25 @@ function BulkPartyImportDialog({
           if (r.status === "update" && r.matchId) {
             // Descriptive fields only — opening balance is NEVER changed on an
             // existing party by import (it feeds their ledger balance).
-            PartyRepo.updateBatched(batch, r.matchId, {
+            const patch: Partial<Party> = {
               phone: r.phone,
               type: r.type,
               creditLimit: r.creditLimit,
               gstin: r.gstin,
-            });
+            };
+            // Only ever written when the file actually supplies one. update()
+            // rewrites the whole document, so patching address: undefined
+            // would wipe an address already saved against this party just
+            // because the sheet being imported has no Address column.
+            if (r.address) patch.address = r.address;
+            PartyRepo.updateBatched(batch, r.matchId, patch);
           } else {
             PartyRepo.addBatched(batch, {
               id: genId(),
               name: r.name,
               type: r.type,
               phone: r.phone,
+              address: r.address,
               gstin: r.gstin,
               openingBalance: r.openingBalance,
               creditLimit: r.creditLimit,
@@ -766,6 +778,7 @@ function BulkPartyImportDialog({
                       <th className="sticky top-0 z-10 bg-muted text-left p-1.5">Row</th>
                       <th className="sticky top-0 z-10 bg-muted text-left p-1.5">Name</th>
                       <th className="sticky top-0 z-10 bg-muted text-left p-1.5">Phone</th>
+                      <th className="sticky top-0 z-10 bg-muted text-left p-1.5">Address</th>
                       <th className="sticky top-0 z-10 bg-muted text-right p-1.5">Opening Bal.</th>
                       <th className="sticky top-0 z-10 bg-muted text-left p-1.5">Status</th>
                     </tr>
@@ -776,6 +789,9 @@ function BulkPartyImportDialog({
                         <td className="p-1.5">{r.rowNum}</td>
                         <td className="p-1.5">{r.name || "—"}</td>
                         <td className="p-1.5">{r.phone ?? "—"}</td>
+                        <td className="p-1.5 max-w-[220px] truncate" title={r.address}>
+                          {r.address ?? "—"}
+                        </td>
                         <td className="p-1.5 text-right tabular-nums">
                           {r.status === "update" ? "—" : fmtMoney(r.openingBalance)}
                         </td>
@@ -867,12 +883,16 @@ export function PartyDialog({
       return;
     }
     setSaving(true);
+    // A cleared address must become undefined, not "" — update() rewrites the
+    // whole merged document, and stripUndefined then drops the field entirely
+    // rather than leaving an empty string behind on the party.
+    const clean = { ...form, address: form.address?.trim() || undefined };
     if (party) {
-      PartyRepo.update(party.id, form as Party);
+      PartyRepo.update(party.id, clean as Party);
       toast.success("Party updated");
     } else {
       PartyRepo.add({
-        ...form,
+        ...clean,
         name: form.name!,
         type: "both",
         openingBalance: form.openingBalance ?? 0,
@@ -945,6 +965,19 @@ export function PartyDialog({
             value={form.phone ?? ""}
             onChange={(e) => setForm({ ...form, phone: e.target.value })}
           />
+          {/* A textarea, not a Field — a party address is routinely two or
+              three lines (shop/street/city) and it prints on the bill exactly
+              as typed, line breaks included. */}
+          <label className="sm:col-span-2 flex flex-col gap-1 text-[12px]">
+            <span className="text-muted-foreground font-medium">Address</span>
+            <textarea
+              value={form.address ?? ""}
+              onChange={(e) => setForm({ ...form, address: e.target.value })}
+              rows={2}
+              placeholder="Shop / street, area, city — printed on the bill"
+              className="px-2 py-1.5 border rounded bg-background outline-none focus:border-primary focus:ring-1 focus:ring-primary resize-y"
+            />
+          </label>
           <NumField
             label="Opening Balance (+ they owe you, − you owe them)"
             value={form.openingBalance ?? 0}

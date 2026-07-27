@@ -9,6 +9,7 @@ import { useShareablePdf } from "@/hooks/useShareablePdf";
 import { useFitScale } from "@/hooks/useFitScale";
 import { fmtMode } from "@/components/ModePills";
 import { PrintableInvoice } from "@/components/PrintableInvoice";
+import { itemCodesByLine } from "@/lib/itemCodes";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useRepoData } from "@/hooks/useRepoData";
 import { toast } from "sonner";
@@ -181,12 +182,23 @@ function BillDetailPage() {
             className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 h-8 px-4 bg-primary text-white rounded-md text-sm font-semibold hover:opacity-90 transition disabled:opacity-60 disabled:cursor-not-allowed"
             title="Print"
           >
-            {pdfBusy ? (<><Loader2 className="h-4 w-4 animate-spin" /> Preparing…</>) : (<><Printer className="h-4 w-4" /> Print</>)}
+            {pdfBusy ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" /> Preparing…
+              </>
+            ) : (
+              <>
+                <Printer className="h-4 w-4" /> Print
+              </>
+            )}
           </button>
         </div>
       </div>
 
-      <div ref={previewRef} className="flex-1 overflow-auto py-6 px-4 flex justify-center bg-gray-100">
+      <div
+        ref={previewRef}
+        className="flex-1 overflow-auto py-6 px-4 flex justify-center bg-gray-100"
+      >
         {co && (
           <div
             className="shrink-0"
@@ -202,7 +214,13 @@ function BillDetailPage() {
                 transformOrigin: "top left",
               }}
             >
-              <PrintableInvoice inv={inv} company={co} mode="purchase" className="print-visible" />
+              <PrintableInvoice
+                inv={inv}
+                company={co}
+                mode="purchase"
+                codeByLine={itemCodesByLine(inv.lineItems)}
+                className="print-visible"
+              />
             </div>
           </div>
         )}
