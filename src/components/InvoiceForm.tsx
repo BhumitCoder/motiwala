@@ -1967,25 +1967,70 @@ function PriceHistoryCell({
 }) {
   const [open, setOpen] = useState(false);
   const inputElRef = useRef<HTMLInputElement | null>(null);
-  const [rect, setRect] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [rect, setRect] = useState<{
+    left: number;
+    width: number;
+    maxHeight: number;
+    top?: number;
+    bottom?: number;
+  } | null>(null);
 
   // Same portal trick as ItemEntryRow's dropdown — this cell lives inside
   // the overflow-x-auto item table, so a plain absolutely positioned popup
   // gets clipped by the table's own scroll box.
+  //
+  // Placement is measured against the VISUAL viewport, not just the window.
+  // Price is the right-most column, so on a phone the input is usually
+  // scrolled to the far edge of the table: right-aligning a fixed 256px box
+  // to it put the popup partly (often entirely) off-screen. It now shrinks to
+  // fit narrow screens, is clamped inside the viewport on both sides, and
+  // flips above the input when the on-screen keyboard leaves no room below —
+  // the keyboard shrinks visualViewport but not window.innerHeight, which is
+  // why the space check can't use the window alone.
   useEffect(() => {
     if (!open) return;
     const updateRect = () => {
       const el = inputElRef.current;
       if (!el) return;
       const r = el.getBoundingClientRect();
-      setRect({ top: r.bottom + 4, left: r.right - 256, width: 256 });
+      const vv = window.visualViewport;
+      const vLeft = vv?.offsetLeft ?? 0;
+      const vTop = vv?.offsetTop ?? 0;
+      const vRight = vLeft + (vv?.width ?? window.innerWidth);
+      const vBottom = vTop + (vv?.height ?? window.innerHeight);
+      const GAP = 8;
+
+      const width = Math.min(256, vRight - vLeft - GAP * 2);
+      // Keep the preferred right-alignment, but never outside the viewport.
+      const left = Math.min(Math.max(vLeft + GAP, r.right - width), vRight - width - GAP);
+
+      const spaceBelow = vBottom - r.bottom - GAP;
+      const spaceAbove = r.top - vTop - GAP;
+      // Below unless it's genuinely cramped there and roomier above.
+      if (spaceBelow >= 140 || spaceBelow >= spaceAbove) {
+        setRect({ left, width, top: r.bottom + 4, maxHeight: Math.max(96, spaceBelow) });
+      } else {
+        // `bottom` anchors the popup's lower edge just above the input, so it
+        // sits flush no matter how many history rows there are. Measured from
+        // the layout viewport, which is what position:fixed resolves against.
+        setRect({
+          left,
+          width,
+          bottom: window.innerHeight - r.top + 4,
+          maxHeight: Math.max(96, spaceAbove),
+        });
+      }
     };
     updateRect();
     window.addEventListener("scroll", updateRect, true);
     window.addEventListener("resize", updateRect);
+    window.visualViewport?.addEventListener("resize", updateRect);
+    window.visualViewport?.addEventListener("scroll", updateRect);
     return () => {
       window.removeEventListener("scroll", updateRect, true);
       window.removeEventListener("resize", updateRect);
+      window.visualViewport?.removeEventListener("resize", updateRect);
+      window.visualViewport?.removeEventListener("scroll", updateRect);
     };
   }, [open]);
 
@@ -2003,8 +2048,15 @@ function PriceHistoryCell({
         rect &&
         createPortal(
           <div
-            style={{ position: "fixed", top: rect.top, left: rect.left, width: rect.width }}
-            className="z-50 border rounded-md bg-popover shadow-elevated overflow-hidden"
+            style={{
+              position: "fixed",
+              top: rect.top,
+              bottom: rect.bottom,
+              left: rect.left,
+              width: rect.width,
+              maxHeight: rect.maxHeight,
+            }}
+            className="z-50 border rounded-md bg-popover shadow-elevated overflow-y-auto overscroll-contain"
           >
             <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground bg-muted/50 border-b">
               Last {isSale ? "Sale" : "Purchase"} Prices — {partyName}
