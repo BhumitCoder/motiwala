@@ -1979,47 +1979,53 @@ function PriceHistoryCell({
   // the overflow-x-auto item table, so a plain absolutely positioned popup
   // gets clipped by the table's own scroll box.
   //
-  // Placement is measured against the VISUAL viewport, not just the window.
-  // Price is the right-most column, so on a phone the input is usually
-  // scrolled to the far edge of the table: right-aligning a fixed 256px box
-  // to it put the popup partly (often entirely) off-screen. It now shrinks to
-  // fit narrow screens, is clamped inside the viewport on both sides, and
-  // flips above the input when the on-screen keyboard leaves no room below —
-  // the keyboard shrinks visualViewport but not window.innerHeight, which is
-  // why the space check can't use the window alone.
+  // PHONES DELIBERATELY DO NOT ANCHOR TO THE INPUT. When the numeric keyboard
+  // opens, iOS scrolls the visual viewport inside the layout viewport, but
+  // `position: fixed` still resolves against the LAYOUT viewport — so a box
+  // pinned to the input's measured rect drifts far away from it (it was
+  // landing up beside the Bill Date field). Chasing that with corrections
+  // means tracking two viewports through focus, scroll, keyboard-open and
+  // rotation, and getting any one of them wrong puts the popup off-screen
+  // again. Instead the phone layout ignores the input entirely and sits as a
+  // full-width sheet just above the keyboard: always in the same predictable
+  // place, always thumb-reachable, nothing to drift.
+  //
+  // Desktop keeps the original anchored popup — right-aligned 256px under the
+  // input, byte-for-byte the placement that already works there.
   useEffect(() => {
     if (!open) return;
     const updateRect = () => {
       const el = inputElRef.current;
       if (!el) return;
-      const r = el.getBoundingClientRect();
       const vv = window.visualViewport;
       const vLeft = vv?.offsetLeft ?? 0;
       const vTop = vv?.offsetTop ?? 0;
-      const vRight = vLeft + (vv?.width ?? window.innerWidth);
-      const vBottom = vTop + (vv?.height ?? window.innerHeight);
+      const vw = vv?.width ?? window.innerWidth;
+      const vh = vv?.height ?? window.innerHeight;
       const GAP = 8;
 
-      const width = Math.min(256, vRight - vLeft - GAP * 2);
-      // Keep the preferred right-alignment, but never outside the viewport.
-      const left = Math.min(Math.max(vLeft + GAP, r.right - width), vRight - width - GAP);
-
-      const spaceBelow = vBottom - r.bottom - GAP;
-      const spaceAbove = r.top - vTop - GAP;
-      // Below unless it's genuinely cramped there and roomier above.
-      if (spaceBelow >= 140 || spaceBelow >= spaceAbove) {
-        setRect({ left, width, top: r.bottom + 4, maxHeight: Math.max(96, spaceBelow) });
-      } else {
-        // `bottom` anchors the popup's lower edge just above the input, so it
-        // sits flush no matter how many history rows there are. Measured from
-        // the layout viewport, which is what position:fixed resolves against.
+      if (vw < 640) {
+        // Distance from the layout viewport's bottom edge up to the visual
+        // viewport's bottom edge — i.e. exactly the height the keyboard is
+        // covering. Pinning `bottom` to that keeps the sheet resting on top
+        // of the keyboard whether it's open or closed.
+        const keyboard = Math.max(0, window.innerHeight - (vTop + vh));
         setRect({
-          left,
-          width,
-          bottom: window.innerHeight - r.top + 4,
-          maxHeight: Math.max(96, spaceAbove),
+          left: vLeft + GAP,
+          width: vw - GAP * 2,
+          bottom: keyboard + GAP,
+          maxHeight: Math.min(260, vh - GAP * 2),
         });
+        return;
       }
+
+      const r = el.getBoundingClientRect();
+      setRect({
+        left: r.right - 256,
+        width: 256,
+        top: r.bottom + 4,
+        maxHeight: Math.max(96, vTop + vh - r.bottom - GAP),
+      });
     };
     updateRect();
     window.addEventListener("scroll", updateRect, true);
@@ -2081,7 +2087,9 @@ function PriceHistoryCell({
                       onValue(h.price);
                       setOpen(false);
                     }}
-                    className="w-full grid grid-cols-3 gap-2 px-3 py-1.5 text-[12px] text-left hover:bg-accent border-b last:border-0"
+                    // Roomier rows on the phone sheet — these are thumb
+                    // targets there, not mouse targets. Unchanged on sm+.
+                    className="w-full grid grid-cols-3 gap-2 px-3 py-2.5 sm:py-1.5 text-[13px] sm:text-[12px] text-left hover:bg-accent active:bg-accent border-b last:border-0"
                   >
                     <span className="text-muted-foreground">{fmtDate(h.date)}</span>
                     <span className="text-right tabular-nums">{h.qty}</span>
